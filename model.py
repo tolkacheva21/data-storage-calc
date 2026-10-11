@@ -122,8 +122,8 @@ EQUATIONS: Dict[int, EqSpec] = {
               "std", plus=(4, 5), minus=(1, 2, 3)),                                     # (2.17)
     10: EqSpec(_seq(95, tuple(range(1, 13))), "std", q=((107, 13), (108, 14)),
                plus=(1, 2), minus=(3,)),                                                # (2.17')
-    11: EqSpec(_seq(109, (1, 2, 3, 4, 8, 10, 12, 13, 14)), "diffmul",
-               q=((118, 5), (119, 6)), plus=(1, 2, 3, 4, 5)),                           # (2.19)
+    11: EqSpec(_seq(109, (1, 2, 3, 4, 8, 10, 12, 13, 14)), "sub",
+               q=((118, 5), (119, 6)), minus=(1, 2, 3, 4, 5)),                          # (2.19): P - Q*(z1+..+z5)
     12: EqSpec(_seq(120, (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14)),
                "std", plus=(1, 4, 5), minus=(3,)),                                      # (2.20)
     13: EqSpec(_seq(133, (1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14)), "sub",
@@ -135,7 +135,7 @@ EQUATIONS: Dict[int, EqSpec] = {
 FIXED_ONE = {(1, 1), (2, 2), (6, 6), (10, 10)}
 
 # Коэффициенты полинома f(x) = a0 + a1*x + a2*x^2 по умолчанию
-DEFAULT_POLY = (0.9, 0.2, 0.0)
+DEFAULT_POLY = (0.9, 0.2, 0.0, 0.0)   # a0, a1, a2, a3: f(x) = a0 + a1·x + a2·x² + a3·x³
 
 
 def f_table_rows() -> List[dict]:
@@ -153,28 +153,69 @@ def f_table_rows() -> List[dict]:
 # --------------------------------------------------------------------------- #
 def default_config() -> dict:
     zeta = [
-        {"kind": "ramp",  "v0": 0.10, "v1": 0.50, "t0": 0.0,  "t1": 24.0},
-        {"kind": "const", "v0": 0.20, "v1": 0.20, "t0": 0.0,  "t1": 24.0},
-        {"kind": "step",  "v0": 0.00, "v1": 0.60, "t0": 12.0, "t1": 24.0},
-        {"kind": "sin",   "v0": 0.30, "v1": 0.20, "t0": 0.0,  "t1": 12.0},
-        {"kind": "const", "v0": 0.10, "v1": 0.10, "t0": 0.0,  "t1": 24.0},
+        {"kind": "ramp",  "v0": 0.10, "v1": 0.50, "t0": 0.0, "t1": 1.0},
+        {"kind": "const", "v0": 0.20, "v1": 0.20, "t0": 0.0, "t1": 1.0},
+        {"kind": "step",  "v0": 0.00, "v1": 0.60, "t0": 0.5, "t1": 1.0},
+        {"kind": "sin",   "v0": 0.30, "v1": 0.20, "t0": 0.0, "t1": 1.0},
+        {"kind": "const", "v0": 0.10, "v1": 0.10, "t0": 0.0, "t1": 1.0},
     ]
     f_coefs = {}
     for r in f_table_rows():
         key = f"{r['i']},{r['j']}"
-        f_coefs[key] = [1.0, 0.0, 0.0] if (r["i"], r["j"]) in FIXED_ONE else list(DEFAULT_POLY)
+        f_coefs[key] = [1.0, 0.0, 0.0, 0.0] if (r["i"], r["j"]) in FIXED_ONE else list(DEFAULT_POLY)
     return {
-        "T": 24.0,
+        "T": 1.0,
         "dt": 0.05,
-        "tau": 0.02,
+        "tau": 0.1,
+        # начальные значения X(0) - как в примере из методички, X* = 1
         "indicators": [
-            {"x0": 0.50, "xstar": 0.80, "xmin": 0.0, "xmax": 1.0, "gamma": 1.0}
-            for _ in range(N_X)
+            {"x0": x0, "xstar": 1.0, "xmin": 0.0, "xmax": 1.0, "gamma": 1.0}
+            for x0 in (0.8, 0.7, 0.83, 0.72, 0.6, 0.52, 0.48, 0.22, 0.27, 0.54, 0.2, 0.4, 0.32, 0.14)
         ],
         "zeta": zeta,
         "f_coefs": f_coefs,
         "plan": {"start": 0.0, "u": [0.0] * N_X},
     }
+
+
+# --------------------------------------------------------------------------- #
+#  Генерация случайных данных (кнопки «Рандомизировать»)
+# --------------------------------------------------------------------------- #
+def randomize_x0(cfg: dict, rng: np.random.Generator) -> None:
+    """Начальные значения X_i(0): случайные из [Xmin, Xmax]."""
+    for d in cfg["indicators"]:
+        d["x0"] = round(float(rng.uniform(float(d["xmin"]), float(d["xmax"]))), 2)
+
+
+def randomize_xstar(cfg: dict, rng: np.random.Generator) -> None:
+    """Рекомендованные значения X_i*: из верхней половины диапазона, строго больше нуля."""
+    for d in cfg["indicators"]:
+        lo, hi = float(d["xmin"]), float(d["xmax"])
+        d["xstar"] = max(round(float(rng.uniform(lo + 0.5 * (hi - lo), hi)), 2), 0.01)
+
+
+def randomize_zeta(cfg: dict, rng: np.random.Generator) -> None:
+    """Случайные профили возмущений ζ_m(t) на горизонте [0, T]."""
+    T = float(cfg["T"])
+    kinds = list(ZETA_KINDS)
+    for spec in cfg["zeta"]:
+        kind = str(rng.choice(kinds))
+        t0 = round(float(rng.uniform(0.0, 0.5 * T)), 2)
+        t1 = round(float(rng.uniform(0.5 * T, T)), 2)
+        v0 = round(float(rng.uniform(0.0, 0.6)), 2)
+        v1 = round(float(rng.uniform(0.0, 0.3 if kind == "sin" else 1.0)), 2)
+        if kind == "const":
+            v1 = v0
+        spec.update({"kind": kind, "v0": v0, "v1": v1, "t0": t0, "t1": t1})
+
+
+def randomize_f(cfg: dict, rng: np.random.Generator) -> None:
+    """Случайные коэффициенты полиномов f (кроме функций, равных 1)."""
+    for key in cfg["f_coefs"]:
+        i, j = (int(s) for s in key.split(","))
+        if (i, j) not in FIXED_ONE:
+            cfg["f_coefs"][key] = [round(float(rng.uniform(0.5, 1.0)), 2),
+                                   round(float(rng.uniform(0.0, 0.5)), 2), 0.0, 0.0]
 
 
 def config_to_json(cfg: dict) -> str:
@@ -191,8 +232,8 @@ def config_from_json(text: str) -> dict:
                 cfg[key][n].update(item)
         elif key == "f_coefs" and isinstance(val, dict):
             for k, v in val.items():
-                if k in cfg["f_coefs"] and len(v) == 3:
-                    cfg["f_coefs"][k] = [float(a) for a in v]
+                if k in cfg["f_coefs"] and len(v) in (3, 4):
+                    cfg["f_coefs"][k] = ([float(a) for a in v] + [0.0])[:4]
         elif key == "plan" and isinstance(val, dict):
             cfg["plan"].update(val)
         elif key in cfg:
@@ -249,7 +290,7 @@ class _Compiled:
     """Конфигурация, разложенная в матрицы для быстрого векторного расчёта."""
 
     def __init__(self, cfg: dict):
-        self.A = np.zeros((3, N_X, N_X))            # коэффициенты a0,a1,a2 для f(i, j)
+        self.A = np.zeros((4, N_X, N_X))            # коэффициенты a0..a3 для f(i, j)
         self.Pm = np.zeros((N_X, N_X), dtype=bool)  # маска множителей P
         self.Qm = np.zeros((N_X, N_X), dtype=bool)  # маска множителей Q
         self.Sp = np.zeros((N_X, N_Z))              # ζ в «плюс»-группе
@@ -273,7 +314,7 @@ class _Compiled:
                 self.Sm[r, :4] = 1.0
         for key, coefs in cfg["f_coefs"].items():
             i, j = (int(s) for s in key.split(","))
-            for n in range(3):
+            for n in range(min(len(coefs), 4)):
                 self.A[n, i - 1, j - 1] = float(coefs[n])
 
         ind = cfg["indicators"]
@@ -288,7 +329,8 @@ class _Compiled:
         self.u_start = float(cfg["plan"]["start"])
 
     def rhs(self, x: np.ndarray, z: np.ndarray, t: float) -> np.ndarray:
-        F = self.A[0] + self.A[1] * x[None, :] + self.A[2] * (x[None, :] ** 2)
+        xx = x[None, :]
+        F = self.A[0] + self.A[1] * xx + self.A[2] * xx ** 2 + self.A[3] * xx ** 3
         P = np.where(self.Pm, F, 1.0).prod(axis=1)
         Q = np.where(self.Qm, F, 1.0).prod(axis=1)
         sp = self.Sp @ z

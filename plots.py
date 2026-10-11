@@ -114,6 +114,36 @@ def fig_sensitivity(sens: Dict[str, np.ndarray], zeta_index: int, selected: Sequ
     return fig
 
 
+def fig_radar_grid(res: Result, fractions: Sequence[float] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)) -> Figure:
+    """Сечения: лепестковые диаграммы в моменты t = frac * T (сетка 2 x 3)."""
+    ind = res.cfg["indicators"]
+    lo = np.array([d["xmin"] for d in ind], dtype=float)
+    hi = np.array([d["xmax"] for d in ind], dtype=float)
+    rng = np.where(np.abs(hi - lo) > 1e-12, hi - lo, 1.0)
+    star = np.clip((np.array([d["xstar"] for d in ind], dtype=float) - lo) / rng, 0.0, 1.0)
+    ang = np.linspace(0, 2 * np.pi, N_X, endpoint=False)
+    ang_c = np.concatenate([ang, ang[:1]])
+    fig = Figure(figsize=(12, 8.5), dpi=100)
+    for n, fr in enumerate(fractions):
+        idx = int(np.argmin(np.abs(res.t - fr * res.t[-1])))
+        v = np.clip((res.X[idx] - lo) / rng, 0.0, 1.0)
+        ax = fig.add_subplot(2, 3, n + 1, projection="polar")
+        ax.set_theta_offset(np.pi / 2)
+        ax.set_theta_direction(-1)
+        ax.plot(ang_c, np.concatenate([star, star[:1]]), color="#2ca02c", lw=1.0, ls="--")
+        ax.plot(ang_c, np.concatenate([v, v[:1]]), color="#d62728", lw=1.8)
+        ax.fill(ang_c, np.concatenate([v, v[:1]]), color="#d62728", alpha=0.18)
+        ax.set_xticks(ang)
+        ax.set_xticklabels([f"X{i + 1}" for i in range(N_X)], fontsize=7)
+        ax.set_ylim(0, 1)
+        ax.set_yticks([0.5, 1.0])
+        ax.set_yticklabels(["0.5", "1"], fontsize=6, color="gray")
+        ax.set_title(f"t = {res.t[idx]:.2f}", fontsize=10, pad=16)
+    fig.suptitle("Сечения: лепестковые диаграммы (красный - расчёт, зелёный пунктир - X*)", fontsize=11)
+    fig.tight_layout(h_pad=3.5)
+    return fig
+
+
 def fig_radar(res: Result, t_index: int, show_initial: bool = True, show_target: bool = True) -> Figure:
     """Лепестковая диаграмма: X_i в момент t, начальные значения и рекомендованные X_i*.
 
