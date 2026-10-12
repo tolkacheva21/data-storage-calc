@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 import copy
-import json
 from dataclasses import dataclass, field
 from typing import Dict, List, Sequence, Tuple
 
@@ -216,30 +215,6 @@ def randomize_f(cfg: dict, rng: np.random.Generator) -> None:
         if (i, j) not in FIXED_ONE:
             cfg["f_coefs"][key] = [round(float(rng.uniform(0.5, 1.0)), 2),
                                    round(float(rng.uniform(0.0, 0.5)), 2), 0.0, 0.0]
-
-
-def config_to_json(cfg: dict) -> str:
-    return json.dumps(cfg, ensure_ascii=False, indent=2)
-
-
-def config_from_json(text: str) -> dict:
-    """Загрузка конфигурации; недостающие поля берутся по умолчанию."""
-    loaded = json.loads(text)
-    cfg = default_config()
-    for key, val in loaded.items():
-        if key in ("indicators", "zeta") and isinstance(val, list):
-            for n, item in enumerate(val[: len(cfg[key])]):
-                cfg[key][n].update(item)
-        elif key == "f_coefs" and isinstance(val, dict):
-            for k, v in val.items():
-                if k in cfg["f_coefs"] and len(v) in (3, 4):
-                    cfg["f_coefs"][k] = ([float(a) for a in v] + [0.0])[:4]
-        elif key == "plan" and isinstance(val, dict):
-            cfg["plan"].update(val)
-        elif key in cfg:
-            cfg[key] = val
-    return cfg
-
 
 # --------------------------------------------------------------------------- #
 #  Возмущения ζ(t)

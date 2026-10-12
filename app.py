@@ -265,8 +265,6 @@ with tab_res:
     for m in range(M.N_Z):
         series[f"zeta{m + 1}"] = res.zeta[:, m]
     series["Z"] = res.Z
-    st.download_button("Скачать временные ряды (CSV)", series.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
-                       file_name="dwh_results.csv", mime="text/csv")
 
 # --------------------------------------------------------------------------- #
 #  Графики
