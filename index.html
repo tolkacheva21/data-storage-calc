@@ -8,11 +8,13 @@
 </head>
 <body>
   <div id="root"></div>
-  <script src="https://cdn.jsdelivr.net/npm/@stlite/browser@0.85.1/build/stlite.js"></script>
-  <script>
-    async function load(name) { return (await fetch(name)).text(); }
-    (async () => {
-      stlite.mount({
+  <script type="module">
+    import { mount } from "https://cdn.jsdelivr.net/npm/@stlite/browser@0.85.1/build/stlite.js";
+
+    const load = async (name) => (await fetch(name)).text();
+
+    mount(
+      {
         requirements: ["numpy", "pandas", "matplotlib", "jinja2"],
         entrypoint: "app.py",
         files: {
@@ -20,8 +22,9 @@
           "model.py": await load("model.py"),
           "plots.py": await load("plots.py"),
         },
-      }, document.getElementById("root"));
-    })();
+      },
+      document.getElementById("root")
+    );
   </script>
 </body>
 </html>
