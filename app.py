@@ -39,31 +39,19 @@ def k(name: str) -> str:
 
 st.title("Моделирование характеристик эффективности ПО хранилища данных")
 st.caption(
-    "Модель системной динамики: 14 показателей Xᵢ(t), 5 возмущений ζₘ(t), "
-    "уравнения (2.9)–(2.21) из документа."
+    "Модель системной динамики: 14 показателей Xᵢ(t), 5 возмущений ζₘ(t)."
 )
 
 # --------------------------------------------------------------------------- #
-#  Боковая панель: сохранение / загрузка конфигурации
+#  Боковая панель: сохранение
 # --------------------------------------------------------------------------- #
 with st.sidebar:
-    st.header("Конфигурация")
-    uploaded = st.file_uploader("Загрузить конфигурацию (JSON)", type=["json"], key=k("upl"))
-    if uploaded is not None and st.button("Применить загруженный файл"):
-        try:
-            st.session_state.base_cfg = M.config_from_json(uploaded.getvalue().decode("utf-8"))
-            st.session_state.ver += 1
-            _rerun()
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"Не удалось прочитать файл: {exc}")
+    st.subheader("Генерация данных")
+    rnd_all = st.button("Рандомизировать всё", help="X(0), X*, возмущения ζ и коэффициенты функций f")
     if st.button("Сбросить все значения по умолчанию"):
         st.session_state.base_cfg = M.default_config()
         st.session_state.ver += 1
         _rerun()
-    st.divider()
-    st.subheader("Генерация данных")
-    rnd_all = st.button("Рандомизировать всё", help="X(0), X*, возмущения ζ и коэффициенты функций f")
-    save_slot = st.empty()  # кнопка сохранения заполняется после сборки текущей конфигурации
 
 # --------------------------------------------------------------------------- #
 #  Ввод данных
@@ -227,10 +215,6 @@ if rnd_all or rnd_x0 or rnd_xstar or rnd_zeta or rnd_f:
     st.session_state.ver += 1
     _rerun()
 
-with save_slot.container():
-    st.download_button("Скачать текущую конфигурацию (JSON)", M.config_to_json(cfg),
-                       file_name="dwh_config.json", mime="application/json")
-
 # --------------------------------------------------------------------------- #
 #  Проверка данных и расчёт
 # --------------------------------------------------------------------------- #
@@ -322,14 +306,16 @@ with tab_graph:
         st.pyplot(plots.fig_sensitivity(sens, zi, sel_s))
 
     with g6:
-        c1, c2, c3 = st.columns([3, 1, 1])
+        col_plot, col_ctrl = st.columns([1, 1])
         step = float(res.t[1] - res.t[0])
-        tsel = c1.slider("Момент времени t", min_value=0.0, max_value=float(res.t[-1]), value=float(res.t[-1]),
-                         step=step, key="radar_t")
-        show0 = c2.checkbox("Начальные", value=True, key="radar_0")
-        show_star = c3.checkbox("X*", value=True, key="radar_s")
+        with col_ctrl:
+            tsel = st.slider("Момент времени t", min_value=0.0, max_value=float(res.t[-1]),
+                             value=float(res.t[-1]), step=step, key="radar_t")
+            show0 = st.checkbox("Начальные значения", value=True, key="radar_0")
+            show_star = st.checkbox("Рекомендованные X*", value=True, key="radar_s")
         idx = int(np.argmin(np.abs(res.t - tsel)))
-        st.pyplot(plots.fig_radar(res, idx, show0, show_star))
+        with col_plot:
+            st.pyplot(plots.fig_radar(res, idx, show0, show_star))
 
     with g7:
         st.caption("Лепестковые диаграммы в моменты t = 0, 0.2T, 0.4T, 0.6T, 0.8T, T "

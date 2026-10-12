@@ -162,7 +162,7 @@ def fig_radar(res: Result, t_index: int, show_initial: bool = True, show_target:
     def closed(v):
         return np.concatenate([v, v[:1]])
 
-    fig = Figure(figsize=(8.2, 7.2), dpi=100)
+    fig = Figure(figsize=(4.6, 4.3), dpi=100)
     ax = fig.add_subplot(111, projection="polar")
     ax.set_theta_offset(np.pi / 2)
     ax.set_theta_direction(-1)
@@ -178,11 +178,11 @@ def fig_radar(res: Result, t_index: int, show_initial: bool = True, show_target:
     ax.fill(ang_c, closed(v), color="#d62728", alpha=0.18)
 
     ax.set_xticks(ang)
-    ax.set_xticklabels([s.split()[0] for s in X_SHORT], fontsize=10)
+    ax.set_xticklabels([s.split()[0] for s in X_SHORT], fontsize=8)
     ax.set_ylim(0, 1)
     ax.set_yticks([0.25, 0.5, 0.75, 1.0])
     ax.set_yticklabels(["0.25", "0.5", "0.75", "1.0"], fontsize=7, color="gray")
-    ax.set_title("Лепестковая диаграмма показателей\n(шкала: (X - Xmin)/(Xmax - Xmin))", fontsize=11, pad=22)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.06), ncol=3, fontsize=9)
+    ax.set_title("Лепестковая диаграмма показателей\n(шкала: (X - Xmin)/(Xmax - Xmin))", fontsize=9, pad=14)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.05), ncol=2, fontsize=7)
     fig.tight_layout()
     return fig
