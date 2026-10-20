@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Sequence, Tuple
 
@@ -178,24 +179,156 @@ def default_config() -> dict:
 
 
 # --------------------------------------------------------------------------- #
+#  Допустимые диапазоны входных данных и их проверка (валидация)
+# --------------------------------------------------------------------------- #
+# Границы (min, max) включительно. Интерфейс берёт их отсюда же, чтобы показать
+# пользователю допустимые значения, а проверка на «бэке» (validate_config) срабатывает
+# независимо от интерфейса - в том числе внутри simulate().
+LIMITS = {
+    "T": (0.1, 1.0),          # горизонт моделирования: время t от 0 до T, по заданию не больше 1
+    "dt": (0.001, 1.0),       # шаг интегрирования
+    "tau": (0.001, 1.0),      # временной масштаб
+    "x": (0.0, 1.0),          # Xmin, Xmax, X(0)
+    "xstar": (0.01, 1.0),     # рекомендованные значения X* (делитель в уравнениях, поэтому не ноль)
+    "gamma": (0.0, 1.0),      # веса показателей в целевой функции
+    "zeta": (0.0, 1.0),       # параметры v0, v1 возмущений
+    "t": (0.0, 1.0),          # параметры t0, t1 возмущений и момент начала плана
+    "coef": (0.0, 1.0),       # коэффициенты a0..a3 полиномов f
+    "u": (0.0, 1.0),          # добавки плана мероприятий
+}
+# Минимум шагов интегрирования: если пользователь задал слишком крупный Δt, расчёт сам делает шаг
+# мельче, чтобы на отрезке 0…T было достаточно точек (график и «сечения по времени» не вырождаются).
+MIN_STEPS = 20
+
+
+class ConfigError(ValueError):
+    """Некорректные входные данные; список сообщений - в атрибуте problems."""
+
+    def __init__(self, problems):
+        self.problems = list(problems)
+        super().__init__("; ".join(self.problems))
+
+
+def _num(v):
+    """float(v), если это конечное число, иначе None (пусто, текст, NaN, inf, bool)."""
+    if isinstance(v, bool):
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+def _get(d, key):
+    return d.get(key) if isinstance(d, dict) else None
+
+
+def validate_config(cfg: dict) -> List[str]:
+    """Проверка входных данных: числа, попадающие в допустимые диапазоны LIMITS.
+
+    Возвращает список понятных сообщений об ошибках (пустой - данные верны).
+    Других условий нет, кроме одного: Xmax должен быть больше Xmin."""
+    try:
+        ind, zeta, plan, fco = cfg["indicators"], cfg["zeta"], cfg["plan"], cfg["f_coefs"]
+        _ = cfg["T"], cfg["dt"], cfg["tau"], plan["start"], plan["u"]
+        if len(ind) != N_X or len(zeta) != N_Z or len(plan["u"]) != N_X:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        return ["Некорректная структура входных данных (ожидается 14 показателей, 5 возмущений и 14 значений плана)."]
+
+    p: List[str] = []
+
+    def chk(label, value, lo, hi):
+        x = _num(value)
+        if x is None:
+            p.append(f"{label}: нужно число (поле пустое или содержит недопустимое значение)")
+            return None
+        if x < lo or x > hi:
+            p.append(f"{label}: значение {x:g} вне допустимого диапазона [{lo:g}; {hi:g}]")
+            return None
+        return x
+
+    # ---- общие параметры
+    chk("Горизонт T (время t от 0 до T)", cfg["T"], *LIMITS["T"])
+    chk("Шаг интегрирования Δt", cfg["dt"], *LIMITS["dt"])
+    chk("Временной масштаб τ", cfg["tau"], *LIMITS["tau"])
+
+    # ---- показатели
+    for n, d in enumerate(ind, start=1):
+        name = f"X{n}"
+        xmin = chk(f"{name}, Xmin", _get(d, "xmin"), *LIMITS["x"])
+        xmax = chk(f"{name}, Xmax", _get(d, "xmax"), *LIMITS["x"])
+        if xmin is not None and xmax is not None and xmax <= xmin:
+            p.append(f"{name}: Xmax ({xmax:g}) должен быть больше Xmin ({xmin:g})")
+        chk(f"{name}, начальное значение X(0)", _get(d, "x0"), *LIMITS["x"])
+        chk(f"{name}, рекомендованное значение X*", _get(d, "xstar"), *LIMITS["xstar"])
+        chk(f"{name}, вес γ", _get(d, "gamma"), *LIMITS["gamma"])
+
+    # ---- возмущения
+    for m, z in enumerate(zeta, start=1):
+        label = f"ζ{m}"
+        if _get(z, "kind") not in ZETA_KINDS:
+            p.append(f"{label}: неизвестный вид возмущения «{_get(z, 'kind')}»")
+            continue
+        chk(f"{label}, v0", _get(z, "v0"), *LIMITS["zeta"])
+        chk(f"{label}, v1", _get(z, "v1"), *LIMITS["zeta"])
+        chk(f"{label}, t0", _get(z, "t0"), *LIMITS["t"])
+        chk(f"{label}, t1", _get(z, "t1"), *LIMITS["t"])
+
+    # ---- функции f
+    bad = []
+    for r in f_table_rows():
+        coefs = fco.get(f"{r['i']},{r['j']}") if isinstance(fco, dict) else None
+        ok = isinstance(coefs, (list, tuple)) and len(coefs) >= 1 and all(
+            _num(c) is not None and LIMITS["coef"][0] <= _num(c) <= LIMITS["coef"][1] for c in coefs)
+        if not ok:
+            bad.append(f"f{r['f']}(X{r['j']})")
+    if bad:
+        shown = ", ".join(bad[:8]) + (f" и ещё {len(bad) - 8}" if len(bad) > 8 else "")
+        p.append(f"Коэффициенты a0…a3 функций должны быть числами в диапазоне [{LIMITS['coef'][0]:g}; "
+                 f"{LIMITS['coef'][1]:g}]. Ошибки в: {shown}")
+
+    # ---- план мероприятий
+    chk("План мероприятий, момент начала t_старт", plan["start"], *LIMITS["t"])
+    bad_u = [f"X{n}" for n, u in enumerate(plan["u"], start=1)
+             if _num(u) is None or not (LIMITS["u"][0] <= _num(u) <= LIMITS["u"][1])]
+    if bad_u:
+        p.append(f"План мероприятий: значения uᵢ должны быть числами в диапазоне [{LIMITS['u'][0]:g}; "
+                 f"{LIMITS['u'][1]:g}]. Ошибки в: {', '.join(bad_u)}")
+    return p
+
+
+def _bounds(d: dict) -> Tuple[float, float]:
+    """Границы показателя для генерации случайных значений (при некорректных - [0, 1])."""
+    lo, hi = _num(_get(d, "xmin")), _num(_get(d, "xmax"))
+    xlo, xhi = LIMITS["x"]
+    if lo is None or hi is None:
+        return xlo, xhi
+    lo, hi = max(lo, xlo), min(hi, xhi)
+    return (lo, hi) if hi > lo else (xlo, xhi)
+
+
+# --------------------------------------------------------------------------- #
 #  Генерация случайных данных (кнопки «Рандомизировать»)
 # --------------------------------------------------------------------------- #
 def randomize_x0(cfg: dict, rng: np.random.Generator) -> None:
     """Начальные значения X_i(0): случайные из [Xmin, Xmax]."""
     for d in cfg["indicators"]:
-        d["x0"] = round(float(rng.uniform(float(d["xmin"]), float(d["xmax"]))), 2)
+        lo, hi = _bounds(d)
+        d["x0"] = round(float(rng.uniform(lo, hi)), 2)
 
 
 def randomize_xstar(cfg: dict, rng: np.random.Generator) -> None:
     """Рекомендованные значения X_i*: из верхней половины диапазона, строго больше нуля."""
     for d in cfg["indicators"]:
-        lo, hi = float(d["xmin"]), float(d["xmax"])
-        d["xstar"] = max(round(float(rng.uniform(lo + 0.5 * (hi - lo), hi)), 2), 0.01)
+        lo, hi = _bounds(d)
+        d["xstar"] = max(round(float(rng.uniform(lo + 0.5 * (hi - lo), hi)), 2), LIMITS["xstar"][0])
 
 
 def randomize_zeta(cfg: dict, rng: np.random.Generator) -> None:
     """Случайные профили возмущений ζ_m(t) на горизонте [0, T]."""
-    T = float(cfg["T"])
+    T = _num(cfg.get("T")) or 1.0
     kinds = list(ZETA_KINDS)
     for spec in cfg["zeta"]:
         kind = str(rng.choice(kinds))
@@ -356,11 +489,15 @@ def simulate(cfg: dict, zeta_override: Dict[int, float] | None = None) -> Result
 
     zeta_override: {номер ζ (с 1): постоянное значение} - заменяет профиль возмущения
     (нужно для анализа чувствительности)."""
+    problems = validate_config(cfg)
+    for m, v in (zeta_override or {}).items():
+        if m not in range(1, N_Z + 1) or _num(v) is None or not (0.0 <= _num(v) <= 1.0):
+            problems.append(f"Возмущение ζ{m}: уровень должен быть числом в диапазоне [0; 1]")
+    if problems:
+        raise ConfigError(problems)
     comp = _Compiled(cfg)
     T, dt = float(cfg["T"]), float(cfg["dt"])
-    if T <= 0 or dt <= 0:
-        raise ValueError("Горизонт T и шаг dt должны быть положительными")
-    n = max(int(round(T / dt)), 1)
+    n = max(int(round(T / dt)), MIN_STEPS)
     h = T / n
     t = np.linspace(0.0, T, n + 1)
     t_half = np.linspace(0.0, T, 2 * n + 1)          # для промежуточных стадий RK4
@@ -392,6 +529,9 @@ def sensitivity(cfg: dict, zeta_index: int, levels: Sequence[float]) -> Dict[str
     """Зависимость конечных значений X_i(T) и Z(T) от уровня возмущения ζ_m (m = zeta_index, с 1).
 
     Остальные возмущения берутся из конфигурации без изменений."""
+    problems = validate_config(cfg)
+    if problems:
+        raise ConfigError(problems)
     fast = copy.deepcopy(cfg)
     fast["dt"] = max(float(cfg["dt"]), float(cfg["T"]) / 200.0)   # грубее шаг - быстрее
     xs, zs = [], []

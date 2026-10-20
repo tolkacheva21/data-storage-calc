@@ -16,6 +16,14 @@ import plots
 
 st.set_page_config(page_title="Моделирование характеристик хранилища данных", layout="wide")
 
+LIM = M.LIMITS
+
+
+def R(key: str) -> str:
+    """Допустимый диапазон в виде «0.1…10» - для подписей полей."""
+    lo, hi = LIM[key]
+    return f"{lo:g}…{hi:g}"
+
 
 def _rerun():
     (getattr(st, "rerun", None) or st.experimental_rerun)()
@@ -41,6 +49,7 @@ st.title("Моделирование характеристик эффектив
 st.caption(
     "Модель системной динамики: 14 показателей Xᵢ(t), 5 возмущений ζₘ(t)."
 )
+err_slot = st.empty()   # сюда выводятся ошибки ввода (заполняется после проверки данных)
 
 # --------------------------------------------------------------------------- #
 #  Боковая панель: сохранение
@@ -60,6 +69,14 @@ tab_in, tab_res, tab_graph, tab_eq = st.tabs(
     ["1. Ввод данных", "2. Результаты расчёта", "3. Графики и диаграммы", "Формулы модели"]
 )
 
+
+def render_equations():
+    st.write("Структура уравнений, реализованная в коде (fₖ — полиномы a0 + a1·x + a2·x² + a3·x³, "
+             "τ — временной масштаб):")
+    for i in range(1, M.N_X + 1):
+        st.code(M.equation_text(i), language=None)
+
+
 cfg = copy.deepcopy(base)
 apply_poly = False
 rnd_x0 = rnd_xstar = rnd_zeta = rnd_f = False
@@ -71,16 +88,24 @@ with tab_in:
 
     # ---- общие параметры
     with sub_gen:
+        st.info(
+            f"**Допустимые значения:** T (время t изменяется от 0 до T) — {R('T')}; "
+            f"Δt — {R('dt')}; τ — {R('tau')}."
+        )
         c1, c2, c3 = st.columns(3)
-        cfg["T"] = c1.number_input("Горизонт моделирования T", min_value=0.1, value=float(base["T"]),
+        cfg["T"] = c1.number_input(f"Горизонт T: время t от 0 до T  [{R('T')}]",
+                                   min_value=LIM["T"][0], max_value=LIM["T"][1], value=float(base["T"]),
                                    step=0.1, key=k("T"),
-                                   help="По заданию график строится на отрезке t от 0 до 1.")
-        cfg["dt"] = c2.number_input("Шаг интегрирования Δt", min_value=0.001, value=float(base["dt"]),
-                                    step=0.01, format="%.3f", key=k("dt"))
+                                   help=f"Допустимо: {R('T')}. По заданию график строится на отрезке t от 0 до 1.")
+        cfg["dt"] = c2.number_input(f"Шаг интегрирования Δt  [{R('dt')}]",
+                                    min_value=LIM["dt"][0], max_value=LIM["dt"][1], value=float(base["dt"]),
+                                    step=0.01, format="%.3f", key=k("dt"),
+                                    help=f"Допустимо: {R('dt')}. Если шаг слишком крупный, расчёт сам уточняет его "
+                                         f"(не менее {M.MIN_STEPS} шагов на отрезке 0…T).")
         cfg["tau"] = c3.number_input(
-            "Временной масштаб τ", min_value=0.0001, value=float(base["tau"]), step=0.01, format="%.4f",
-            key=k("tau"),
-            help="Множитель правой части всех уравнений. В документе не задан: "
+            f"Временной масштаб τ  [{R('tau')}]", min_value=LIM["tau"][0], max_value=LIM["tau"][1],
+            value=float(base["tau"]), step=0.01, format="%.4f", key=k("tau"),
+            help=f"Допустимо: {R('tau')}. Множитель правой части всех уравнений. В документе не задан: "
                  "определяет, насколько быстро показатели движутся к границам [Xmin, Xmax].",
         )
         st.caption("Метод интегрирования: Рунге–Кутта 4-го порядка; значения Xᵢ ограничиваются отрезком [Xᵢmin, Xᵢmax].")
@@ -88,6 +113,13 @@ with tab_in:
     # ---- показатели
     with sub_ind:
         st.write("Начальные значения, рекомендованные значения Xᵢ*, границы и веса показателей (γᵢ).")
+        st.info(
+            "**Допустимые значения:**\n"
+            f"- Xmin и Xmax — {R('x')}, при этом Xmax должен быть больше Xmin;\n"
+            f"- X(0) — {R('x')};\n"
+            f"- X* (рекомендованное) — {R('xstar')};\n"
+            f"- γ (вес) — {R('gamma')}."
+        )
         b1, b2, _ = st.columns([1, 1, 3])
         rnd_x0 = b1.button("Рандомизировать X(0)", key=k("rx0"))
         rnd_xstar = b2.button("Рандомизировать X*", key=k("rxs"))
@@ -105,9 +137,21 @@ with tab_in:
             df_ind, hide_index=True, use_container_width=True, key=k("ind"), num_rows="fixed",
             disabled=["№", "Показатель"],
             column_config={
-                "X(0)": num(format="%.4g"), "X* (рекоменд.)": num(format="%.4g", min_value=0.0001),
-                "Xmin": num(format="%.4g"), "Xmax": num(format="%.4g"),
-                "γ (вес)": num(format="%.4g", min_value=0.0),
+                "X(0)": num(label=f"X(0)  [{R('x')}]", format="%.4g", required=True,
+                            min_value=LIM["x"][0], max_value=LIM["x"][1],
+                            help=f"Допустимо: {R('x')}"),
+                "X* (рекоменд.)": num(label=f"X*  [{R('xstar')}]", format="%.4g", required=True,
+                                      min_value=LIM["xstar"][0], max_value=LIM["xstar"][1],
+                                      help=f"Допустимо: {R('xstar')}"),
+                "Xmin": num(label=f"Xmin  [{R('x')}]", format="%.4g", required=True,
+                            min_value=LIM["x"][0], max_value=LIM["x"][1],
+                            help=f"Допустимо: {R('x')}, меньше Xmax"),
+                "Xmax": num(label=f"Xmax  [{R('x')}]", format="%.4g", required=True,
+                            min_value=LIM["x"][0], max_value=LIM["x"][1],
+                            help=f"Допустимо: {R('x')}, больше Xmin"),
+                "γ (вес)": num(label=f"γ (вес)  [{R('gamma')}]", format="%.4g", required=True,
+                               min_value=LIM["gamma"][0], max_value=LIM["gamma"][1],
+                               help=f"Допустимо: {R('gamma')}"),
             },
             height=35 * (M.N_X + 1) + 3,
         )
@@ -125,6 +169,11 @@ with tab_in:
             "Постоянное: v0 · Ступенька: v0 до t0, затем v1 · Линейный: от v0 (в t0) до v1 (в t1) · "
             "Синусоида: v0 + v1·sin(2π(t−t0)/t1), t1 — период · Импульс: v1 на [t0, t1], иначе v0."
         )
+        st.info(
+            "**Допустимые значения:**\n"
+            f"- v0, v1 — {R('zeta')};\n"
+            f"- t0, t1 — {R('t')} (время)."
+        )
         rnd_zeta = st.button("Рандомизировать возмущения", key=k("rz"))
         kinds = list(M.ZETA_KINDS)
         for m in range(M.N_Z):
@@ -133,10 +182,16 @@ with tab_in:
             c0, c1, c2, c3, c4 = st.columns([2, 1, 1, 1, 1])
             kind = c0.selectbox("Вид", kinds, index=kinds.index(b["kind"]),
                                 format_func=lambda s: M.ZETA_KINDS[s], key=k(f"zk{m}"))
-            v0 = c1.number_input("v0", value=float(b["v0"]), step=0.05, key=k(f"zv0{m}"))
-            v1 = c2.number_input("v1", value=float(b["v1"]), step=0.05, key=k(f"zv1{m}"))
-            t0 = c3.number_input("t0", value=float(b["t0"]), step=0.1, key=k(f"zt0{m}"))
-            t1 = c4.number_input("t1", value=float(b["t1"]), step=0.1, key=k(f"zt1{m}"))
+            v0 = c1.number_input(f"v0  [{R('zeta')}]", min_value=LIM["zeta"][0], max_value=LIM["zeta"][1],
+                                 value=float(b["v0"]), step=0.05, key=k(f"zv0{m}"))
+            v1 = c2.number_input(f"v1  [{R('zeta')}]", min_value=LIM["zeta"][0], max_value=LIM["zeta"][1],
+                                 value=float(b["v1"]), step=0.05, key=k(f"zv1{m}"))
+            t0 = c3.number_input(f"t0  [{R('t')}]", min_value=LIM["t"][0], max_value=LIM["t"][1],
+                                 value=float(b["t0"]), step=0.1, key=k(f"zt0{m}"),
+                                 help=f"Допустимо: {R('t')} (время)")
+            t1 = c4.number_input(f"t1  [{R('t')}]", min_value=LIM["t"][0], max_value=LIM["t"][1],
+                                 value=float(b["t1"]), step=0.1, key=k(f"zt1{m}"),
+                                 help=f"Допустимо: {R('t')} (время)")
             cfg["zeta"][m] = {"kind": kind, "v0": v0, "v1": v1, "t0": t0, "t1": t1}
 
     # ---- функции f
@@ -146,11 +201,16 @@ with tab_in:
             "В документе они названы «полиномами невысокой степени», коэффициенты не приведены — "
             "их можно менять ниже. Функции f₁(X₁), f₁₆(X₂), f₆₇(X₆), f₁₀₄(X₁₀) по документу равны 1."
         )
+        st.info(f"**Допустимые значения:** каждый коэффициент a0, a1, a2, a3 — {R('coef')}.")
         c1, c2, c3, c3b, c4 = st.columns([1, 1, 1, 1, 3])
-        d0 = c1.number_input("a0", value=float(M.DEFAULT_POLY[0]), step=0.05, key=k("d0"))
-        d1 = c2.number_input("a1", value=float(M.DEFAULT_POLY[1]), step=0.05, key=k("d1"))
-        d2 = c3.number_input("a2", value=float(M.DEFAULT_POLY[2]), step=0.05, key=k("d2"))
-        d3 = c3b.number_input("a3", value=float(M.DEFAULT_POLY[3]), step=0.05, key=k("d3"))
+        d0 = c1.number_input(f"a0  [{R('coef')}]", min_value=LIM["coef"][0], max_value=LIM["coef"][1],
+                             value=float(M.DEFAULT_POLY[0]), step=0.05, key=k("d0"))
+        d1 = c2.number_input(f"a1  [{R('coef')}]", min_value=LIM["coef"][0], max_value=LIM["coef"][1],
+                             value=float(M.DEFAULT_POLY[1]), step=0.05, key=k("d1"))
+        d2 = c3.number_input(f"a2  [{R('coef')}]", min_value=LIM["coef"][0], max_value=LIM["coef"][1],
+                             value=float(M.DEFAULT_POLY[2]), step=0.05, key=k("d2"))
+        d3 = c3b.number_input(f"a3  [{R('coef')}]", min_value=LIM["coef"][0], max_value=LIM["coef"][1],
+                              value=float(M.DEFAULT_POLY[3]), step=0.05, key=k("d3"))
         c4.write("")
         apply_poly = c4.button("Применить a0…a3 ко всем функциям (кроме f ≡ 1)")
         rnd_f = c4.button("Рандомизировать коэффициенты f", key=k("rf"))
@@ -168,7 +228,12 @@ with tab_in:
         ed_f = st.data_editor(
             df_f, hide_index=True, use_container_width=True, key=k("fed"), num_rows="fixed",
             disabled=["Уравнение i", "Аргумент j", "Функция"], height=420,
-            column_config={c: st.column_config.NumberColumn(format="%.4g") for c in ("a0", "a1", "a2", "a3")},
+            column_config={
+                c: st.column_config.NumberColumn(
+                    label=f"{c}  [{R('coef')}]", format="%.4g", required=True,
+                    min_value=LIM["coef"][0], max_value=LIM["coef"][1], help=f"Допустимо: {R('coef')}")
+                for c in ("a0", "a1", "a2", "a3")
+            },
         )
         for _, row in ed_f.iterrows():
             cfg["f_coefs"][f"{int(row['Уравнение i'])},{int(row['Аргумент j'])}"] = [
@@ -181,13 +246,20 @@ with tab_in:
             "(в единицах показателя за единицу времени) начиная с момента t_старт. "
             "Нули — расчёт без мероприятий."
         )
-        cfg["plan"]["start"] = st.number_input("Момент начала плана t_старт", min_value=0.0,
-                                               value=float(base["plan"]["start"]), step=0.1, key=k("pstart"))
+        st.info(f"**Допустимые значения:** t_старт — {R('t')} (время); uᵢ — {R('u')}.")
+        cfg["plan"]["start"] = st.number_input(f"Момент начала плана t_старт  [{R('t')}]",
+                                               min_value=LIM["t"][0], max_value=LIM["t"][1],
+                                               value=float(base["plan"]["start"]),
+                                               step=0.1, key=k("pstart"),
+                                               help=f"Допустимо: {R('t')} (время)")
         df_u = pd.DataFrame({"№": range(1, M.N_X + 1), "Показатель": M.X_NAMES,
                              "uᵢ": [float(v) for v in base["plan"]["u"]]})
         ed_u = st.data_editor(df_u, hide_index=True, use_container_width=True, key=k("plan"), num_rows="fixed",
                               disabled=["№", "Показатель"], height=35 * (M.N_X + 1) + 3,
-                              column_config={"uᵢ": st.column_config.NumberColumn(format="%.4g")})
+                              column_config={"uᵢ": st.column_config.NumberColumn(
+                                  label=f"uᵢ  [{R('u')}]", format="%.4g", required=True,
+                                  min_value=LIM["u"][0], max_value=LIM["u"][1],
+                                  help=f"Допустимо: {R('u')}")})
         cfg["plan"]["u"] = [float(v) for v in ed_u["uᵢ"]]
 
 # Применение стандартных коэффициентов ко всем функциям
@@ -217,21 +289,28 @@ if rnd_all or rnd_x0 or rnd_xstar or rnd_zeta or rnd_f:
 
 # --------------------------------------------------------------------------- #
 #  Проверка данных и расчёт
+#  validate_config - та же проверка, что выполняется внутри M.simulate(),
+#  поэтому некорректные данные не пройдут и в обход интерфейса.
 # --------------------------------------------------------------------------- #
-problems = []
-for n, d in enumerate(cfg["indicators"], start=1):
-    if d["xmax"] <= d["xmin"]:
-        problems.append(f"X{n}: Xmax должен быть больше Xmin")
-if sum(d["gamma"] for d in cfg["indicators"]) <= 0:
-    problems.append("Сумма весов γ должна быть положительной")
-if problems:
-    st.error("Проверьте входные данные:\n\n- " + "\n- ".join(problems))
-    st.stop()
+problems = M.validate_config(cfg)
+res = None
+if not problems:
+    try:
+        res = M.simulate(cfg)
+    except M.ConfigError as exc:
+        problems = exc.problems
+    except Exception as exc:  # noqa: BLE001
+        problems = [f"Ошибка расчёта: {exc}"]
 
-try:
-    res = M.simulate(cfg)
-except Exception as exc:  # noqa: BLE001
-    st.error(f"Ошибка расчёта: {exc}")
+if problems:
+    err_slot.error("**Расчёт не выполнен — исправьте входные данные:**\n\n"
+                   + "\n".join(f"- {p}" for p in problems))
+    with tab_res:
+        st.info("Результаты появятся после исправления ошибок на вкладке «1. Ввод данных».")
+    with tab_graph:
+        st.info("Графики появятся после исправления ошибок на вкладке «1. Ввод данных».")
+    with tab_eq:
+        render_equations()
     st.stop()
 
 # --------------------------------------------------------------------------- #
@@ -308,7 +387,8 @@ with tab_graph:
         step = float(res.t[1] - res.t[0])
         with col_ctrl:
             tsel = st.slider("Момент времени t", min_value=0.0, max_value=float(res.t[-1]),
-                             value=float(res.t[-1]), step=step, key="radar_t")
+                             value=float(res.t[-1]), step=step,
+                             key=f"radar_t_{cfg['T']:g}_{cfg['dt']:g}")
             show0 = st.checkbox("Начальные значения", value=True, key="radar_0")
             show_star = st.checkbox("Рекомендованные X*", value=True, key="radar_s")
         idx = int(np.argmin(np.abs(res.t - tsel)))
@@ -324,6 +404,4 @@ with tab_graph:
 #  Формулы
 # --------------------------------------------------------------------------- #
 with tab_eq:
-    st.write("Структура уравнений, реализованная в коде (fₖ — полиномы a0 + a1·x + a2·x², τ — временной масштаб):")
-    for i in range(1, M.N_X + 1):
-        st.code(M.equation_text(i), language=None)
+    render_equations()
