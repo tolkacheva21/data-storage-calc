@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import re
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,13 @@ st.set_page_config(page_title="Моделирование характерист
 
 LIM = M.LIMITS
 
+_SUB = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def sub(n) -> str:
+    """Число нижним индексом: 12 -> ₁₂."""
+    return str(n).translate(_SUB)
+
 
 def R(key: str) -> str:
     """Допустимый диапазон в виде «0.1…10» - для подписей полей."""
@@ -27,6 +35,70 @@ def R(key: str) -> str:
 
 def _rerun():
     (getattr(st, "rerun", None) or st.experimental_rerun)()
+
+
+def _box():
+    """Рамка вокруг блока (на старых версиях Streamlit - без рамки)."""
+    try:
+        return st.container(border=True)
+    except TypeError:
+        return st.container()
+
+
+def _cols(widths):
+    """Колонки с выравниванием по центру (на старых версиях Streamlit - без выравнивания)."""
+    try:
+        return st.columns(widths, vertical_alignment="center")
+    except TypeError:
+        return st.columns(widths)
+
+
+def formula_row(tokens: list) -> dict:
+    """Строка-формула: текст и поля ввода в одну линию, поле стоит сразу после своего обозначения.
+
+    Элементы tokens:
+      {"txt": "..."}                        - текст (markdown);
+      {"num": имя, "label", "value", "lim": (min, max), "key", "step", "disabled"} - поле ввода числа;
+      {"btn": имя, "label", "key"}          - кнопка (в результате True, если нажата);
+      {"calc": функция(значения) -> str, "label"} - вычисляемое поле (только чтение);
+      {"show": "текст", "label"}            - поле только для чтения.
+    Возвращает словарь {имя: введённое число}."""
+    plain = lambda s: re.sub(r"<[^>]+>|\*\*", "", s)   # noqa: E731  длина текста без разметки
+    widths = [max(0.45, 0.115 * len(plain(t["txt"]))) if "txt" in t else 1.25 for t in tokens]
+    cols = _cols(widths)
+    out, deferred = {}, []
+    for col, t in zip(cols, tokens):
+        with col:
+            if "txt" in t:
+                st.markdown(t["txt"], unsafe_allow_html=True)
+            elif "btn" in t:
+                out[t["btn"]] = st.button(t["label"], key=t["key"])
+            elif "num" in t:
+                lo, hi = t["lim"]
+                out[t["num"]] = st.number_input(
+                    t["label"], min_value=float(lo), max_value=float(hi), value=float(t["value"]),
+                    step=t.get("step", 0.05), format="%.3f", key=t["key"],
+                    disabled=t.get("disabled", False), label_visibility="collapsed")
+            else:
+                deferred.append((col, t))
+    for col, t in deferred:          # вычисляемые поля заполняем после того, как введённые значения известны
+        with col:
+            text = t["calc"](out) if "calc" in t else t["show"]
+            st.text_input(t["label"], value=text, disabled=True, label_visibility="collapsed")
+    return out
+
+
+def matrix_html(S) -> str:
+    """Знаковая матрица X → X в виде обычной таблицы (как в Excel): значения 1, -1, 0, без графики."""
+    cols = [f"X{n}" for n in range(1, M.N_X + 1)]
+    head = "<th></th>" + "".join(f"<th>{c}</th>" for c in cols)
+    body = "".join(
+        f"<tr><th>X{i + 1}</th>" + "".join(f"<td>{int(v)}</td>" for v in row) + "</tr>"
+        for i, row in enumerate(S))
+    css = ("<style>.mx{border-collapse:collapse;font-size:0.95rem}"
+           ".mx th,.mx td{border:1px solid rgba(128,128,128,.7);padding:4px 12px;text-align:center}"
+           ".mx td{font-style:italic}.mx th{font-weight:700}</style>")
+    return css + f'<div style="overflow-x:auto"><table class="mx"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
 # --------------------------------------------------------------------------- #
@@ -52,7 +124,7 @@ st.caption(
 err_slot = st.empty()   # сюда выводятся ошибки ввода (заполняется после проверки данных)
 
 # --------------------------------------------------------------------------- #
-#  Боковая панель: сохранение
+#  Боковая панель: генерация данных
 # --------------------------------------------------------------------------- #
 with st.sidebar:
     st.subheader("Генерация данных")
@@ -71,19 +143,22 @@ tab_in, tab_res, tab_graph, tab_eq = st.tabs(
 
 
 def render_equations():
-    st.write("Структура уравнений, реализованная в коде (fₖ — полиномы a0 + a1·x + a2·x² + a3·x³, "
-             "τ — временной масштаб):")
+    """Уравнения в том виде, как записаны в документе: 1/max Xᵢ* в числителе, f(X(t)), ζ(t), p(t)."""
+    st.write("Уравнения модели в записи документа. Масштаб τ в формулы не входит: он используется только "
+             "в расчёте (множитель правой части), см. вкладку «Общие параметры».")
     for i in range(1, M.N_X + 1):
-        st.code(M.equation_text(i), language=None)
-
+        st.markdown(f"Общий вид уравнения, характеризующего изменение во времени {M.DOC_DESCRIPTIONS[i]} "
+                    f"(переменная X{sub(i)}):")
+        st.latex(M.equation_latex(i) + r"\qquad (" + M.DOC_NUMBERS[i] + ")")
 
 cfg = copy.deepcopy(base)
-apply_poly = False
+apply_eq = None      # (номер уравнения, [a0, a1, a2, a3]) - «задать для всех функций уравнения»
 rnd_x0 = rnd_xstar = rnd_zeta = rnd_f = False
+x0_changes = {}      # {номер показателя j: новое X_j(0)}, введённые в строках функций
 
 with tab_in:
-    sub_gen, sub_ind, sub_zeta, sub_f, sub_plan = st.tabs(
-        ["Общие параметры", "Показатели Xᵢ", "Возмущения ζₘ(t)", "Функции fₖ", "План мероприятий"]
+    sub_gen, sub_ind, sub_zeta, sub_f = st.tabs(
+        ["Общие параметры", "Показатели Xᵢ", "Возмущения ζₘ(t)", "Функции fₖ"]
     )
 
     # ---- общие параметры
@@ -115,9 +190,9 @@ with tab_in:
         st.write("Начальные значения, рекомендованные значения Xᵢ*, границы и веса показателей (γᵢ).")
         st.info(
             "**Допустимые значения:**\n"
-            f"- Xmin и Xmax — {R('x')}, при этом Xmax должен быть больше Xmin;\n"
-            f"- X(0) — {R('x')};\n"
-            f"- X* (рекомендованное) — {R('xstar')};\n"
+            f"- Xmin и Xmax(минимум и максимум) — {R('x')}, при этом Xmax должен быть больше Xmin;\n"
+            f"- X(0) (начальные условия) — {R('x')};\n"
+            f"- X* (рекомендованное значение) — {R('xstar')};\n"
             f"- γ (вес) — {R('gamma')}."
         )
         b1, b2, _ = st.columns([1, 1, 3])
@@ -164,110 +239,157 @@ with tab_in:
 
     # ---- возмущения
     with sub_zeta:
-        st.write("Профиль каждого возмущения ζₘ(t) (значения ограничиваются отрезком [0, 1]).")
-        st.caption(
-            "Постоянное: v0 · Ступенька: v0 до t0, затем v1 · Линейный: от v0 (в t0) до v1 (в t1) · "
-            "Синусоида: v0 + v1·sin(2π(t−t0)/t1), t1 — период · Импульс: v1 на [t0, t1], иначе v0."
-        )
+        st.write("Возмущение ζₘ(t) — внешний фактор со значением от 0 до 1, которое меняется со временем. "
+                 "Для каждого выберите вид зависимости: под выбором записана формула, по которой считается ζₘ(t), "
+                 "а ниже — поля для её параметров (справа от каждого обозначения). "
+                 "Результат расчёта всегда ограничивается отрезком [0; 1].")
         st.info(
             "**Допустимые значения:**\n"
-            f"- v0, v1 — {R('zeta')};\n"
-            f"- t0, t1 — {R('t')} (время)."
+            f"- v₀, v₁ (значения возмущения) — {R('zeta')};\n"
+            f"- t₀, t₁ (моменты времени) — {R('t')}."
         )
         rnd_zeta = st.button("Рандомизировать возмущения", key=k("rz"))
         kinds = list(M.ZETA_KINDS)
         for m in range(M.N_Z):
             b = base["zeta"][m]
-            st.markdown(f"**{M.ZETA_NAMES[m]}**")
-            c0, c1, c2, c3, c4 = st.columns([2, 1, 1, 1, 1])
-            kind = c0.selectbox("Вид", kinds, index=kinds.index(b["kind"]),
-                                format_func=lambda s: M.ZETA_KINDS[s], key=k(f"zk{m}"))
-            v0 = c1.number_input(f"v0  [{R('zeta')}]", min_value=LIM["zeta"][0], max_value=LIM["zeta"][1],
-                                 value=float(b["v0"]), step=0.05, key=k(f"zv0{m}"))
-            v1 = c2.number_input(f"v1  [{R('zeta')}]", min_value=LIM["zeta"][0], max_value=LIM["zeta"][1],
-                                 value=float(b["v1"]), step=0.05, key=k(f"zv1{m}"))
-            t0 = c3.number_input(f"t0  [{R('t')}]", min_value=LIM["t"][0], max_value=LIM["t"][1],
-                                 value=float(b["t0"]), step=0.1, key=k(f"zt0{m}"),
-                                 help=f"Допустимо: {R('t')} (время)")
-            t1 = c4.number_input(f"t1  [{R('t')}]", min_value=LIM["t"][0], max_value=LIM["t"][1],
-                                 value=float(b["t1"]), step=0.1, key=k(f"zt1{m}"),
-                                 help=f"Допустимо: {R('t')} (время)")
-            cfg["zeta"][m] = {"kind": kind, "v0": v0, "v1": v1, "t0": t0, "t1": t1}
+            z = f"ζ{sub(m + 1)}(t)"
+            with _box():
+                h1, h2 = st.columns([3, 2])
+                h1.markdown(f"##### ζ{sub(m + 1)} — {M.ZETA_NAMES[m].split(' ', 1)[1]}")
+                kind = h2.selectbox("Вид зависимости", kinds, index=kinds.index(b["kind"]),
+                                    format_func=lambda s: M.ZETA_KINDS[s], key=k(f"zk{m}"))
+
+                def P(name, step=0.05):
+                    """Поле параметра возмущения m (внутреннее имя v0/v1/t0/t1)."""
+                    return {"num": name, "label": f"{z}: {name}", "value": b[name], "step": step,
+                            "lim": LIM["zeta"] if name.startswith("v") else LIM["t"], "key": k(f"z{name}{m}")}
+
+                zl = f"\\zeta_{{{m + 1}}}(t)"
+                if kind == "const":
+                    formula = zl + r" = v_0"
+                    tokens = [{"txt": "**v₀** (значение) ="}, P("v0")]
+                elif kind == "step":
+                    formula = zl + r" = \begin{cases} v_0, & t < t_0 \\ v_1, & t \ge t_0 \end{cases}"
+                    tokens = [{"txt": "**v₀** (до скачка) ="}, P("v0"), {"txt": "**v₁** (после скачка) ="}, P("v1"),
+                              {"txt": "**t₀** (момент скачка) ="}, P("t0", 0.1)]
+                elif kind == "ramp":
+                    formula = (zl + r" = \begin{cases} v_0, & t < t_0 \\ "
+                               r"v_0 + (v_1 - v_0)\,\dfrac{t - t_0}{t_1 - t_0}, & t_0 \le t \le t_1 \\ "
+                               r"v_1, & t > t_1 \end{cases}")
+                    tokens = [{"txt": "**v₀** (значение в начале) ="}, P("v0"),
+                              {"txt": "**v₁** (значение в конце) ="}, P("v1"),
+                              {"txt": "**t₀** (начало изменения) ="}, P("t0", 0.1),
+                              {"txt": "**t₁** (конец изменения) ="}, P("t1", 0.1)]
+                elif kind == "sin":
+                    formula = zl + r" = v_0 + v_1 \sin\dfrac{2\pi\,(t - t_0)}{t_1}"
+                    tokens = [{"txt": "**v₀** (среднее значение) ="}, P("v0"),
+                              {"txt": "**v₁** (амплитуда) ="}, P("v1"),
+                              {"txt": "**t₀** (сдвиг по времени) ="}, P("t0", 0.1),
+                              {"txt": "**t₁** (период) ="}, P("t1", 0.1)]
+                else:  # pulse
+                    formula = (zl + r" = \begin{cases} v_1, & t_0 \le t \le t_1 \\ "
+                               r"v_0, & \text{в остальное время} \end{cases}")
+                    tokens = [{"txt": "**v₀** (вне импульса) ="}, P("v0"),
+                              {"txt": "**v₁** (в импульсе) ="}, P("v1"),
+                              {"txt": "**t₀** (начало импульса) ="}, P("t0", 0.1),
+                              {"txt": "**t₁** (конец импульса) ="}, P("t1", 0.1)]
+                st.latex(formula)
+                vals = {n: float(b[n]) for n in ("v0", "v1", "t0", "t1")}   # скрытые параметры вида сохраняются
+                vals.update(formula_row(tokens))
+            cfg["zeta"][m] = {"kind": kind, **vals}
+            b.update(kind=kind, **vals)      # запоминаем введённое, чтобы оно не терялось при смене вида
 
     # ---- функции f
     with sub_f:
         st.write(
-            "Вспомогательные функции fₖ(Xⱼ) заданы полиномами **f(x) = a0 + a1·x + a2·x² + a3·x³**. "
+            "Вспомогательные функции fₖ(Xⱼ) заданы полиномами **f(x) = a₀ + a₁·x + a₂·x² + a₃·x³**. "
             "В документе они названы «полиномами невысокой степени», коэффициенты не приведены — "
-            "их можно менять ниже. Функции f₁(X₁), f₁₆(X₂), f₆₇(X₆), f₁₀₄(X₁₀) по документу равны 1."
+            "их можно менять ниже: у каждого уравнения есть строка «Задать для всех функций уравнения» "
+            "(поля a₀…a₃ и кнопка), а в каждой строке функции поля стоят справа от обозначений. Редактируются все строки; "
+            "по документу f₁(X₁), f₁₆(X₂), f₆₇(X₆), f₁₀₄(X₁₀) равны 1 (a₀ = 1, остальные 0)."
         )
-        st.info(f"**Допустимые значения:** каждый коэффициент a0, a1, a2, a3 — {R('coef')}.")
-        c1, c2, c3, c3b, c4 = st.columns([1, 1, 1, 1, 3])
-        d0 = c1.number_input(f"a0  [{R('coef')}]", min_value=LIM["coef"][0], max_value=LIM["coef"][1],
-                             value=float(M.DEFAULT_POLY[0]), step=0.05, key=k("d0"))
-        d1 = c2.number_input(f"a1  [{R('coef')}]", min_value=LIM["coef"][0], max_value=LIM["coef"][1],
-                             value=float(M.DEFAULT_POLY[1]), step=0.05, key=k("d1"))
-        d2 = c3.number_input(f"a2  [{R('coef')}]", min_value=LIM["coef"][0], max_value=LIM["coef"][1],
-                             value=float(M.DEFAULT_POLY[2]), step=0.05, key=k("d2"))
-        d3 = c3b.number_input(f"a3  [{R('coef')}]", min_value=LIM["coef"][0], max_value=LIM["coef"][1],
-                              value=float(M.DEFAULT_POLY[3]), step=0.05, key=k("d3"))
-        c4.write("")
-        apply_poly = c4.button("Применить a0…a3 ко всем функциям (кроме f ≡ 1)")
-        rnd_f = c4.button("Рандомизировать коэффициенты f", key=k("rf"))
-
-        rows = M.f_table_rows()
-        df_f = pd.DataFrame({
-            "Уравнение i": [r["i"] for r in rows],
-            "Аргумент j": [r["j"] for r in rows],
-            "Функция": [f"f{r['f']}(X{r['j']})" for r in rows],
-            "a0": [base["f_coefs"][f"{r['i']},{r['j']}"][0] for r in rows],
-            "a1": [base["f_coefs"][f"{r['i']},{r['j']}"][1] for r in rows],
-            "a2": [base["f_coefs"][f"{r['i']},{r['j']}"][2] for r in rows],
-            "a3": [base["f_coefs"][f"{r['i']},{r['j']}"][3] for r in rows],
-        })
-        ed_f = st.data_editor(
-            df_f, hide_index=True, use_container_width=True, key=k("fed"), num_rows="fixed",
-            disabled=["Уравнение i", "Аргумент j", "Функция"], height=420,
-            column_config={
-                c: st.column_config.NumberColumn(
-                    label=f"{c}  [{R('coef')}]", format="%.4g", required=True,
-                    min_value=LIM["coef"][0], max_value=LIM["coef"][1], help=f"Допустимо: {R('coef')}")
-                for c in ("a0", "a1", "a2", "a3")
-            },
+        st.info(
+            "**Допустимые значения:**\n"
+            f"- коэффициенты a₀, a₁, a₂, a₃ (и в строке функции, и в поле «для всех функций уравнения») — {R('coef')};\n"
+            f"- x (значение аргумента, при котором считается f) и Xⱼ(0) (начальное значение показателя) — {R('x')}."
         )
-        for _, row in ed_f.iterrows():
-            cfg["f_coefs"][f"{int(row['Уравнение i'])},{int(row['Аргумент j'])}"] = [
-                float(row["a0"]), float(row["a1"]), float(row["a2"]), float(row["a3"])]
+        rnd_f = st.button("Рандомизировать коэффициенты f", key=k("rf"))
 
-    # ---- план мероприятий
-    with sub_plan:
-        st.write(
-            "План мероприятий p(t) задаётся как добавка uᵢ к скорости изменения показателя Xᵢ "
-            "(в единицах показателя за единицу времени) начиная с момента t_старт. "
-            "Нули — расчёт без мероприятий."
-        )
-        st.info(f"**Допустимые значения:** t_старт — {R('t')} (время); uᵢ — {R('u')}.")
-        cfg["plan"]["start"] = st.number_input(f"Момент начала плана t_старт  [{R('t')}]",
-                                               min_value=LIM["t"][0], max_value=LIM["t"][1],
-                                               value=float(base["plan"]["start"]),
-                                               step=0.1, key=k("pstart"),
-                                               help=f"Допустимо: {R('t')} (время)")
-        df_u = pd.DataFrame({"№": range(1, M.N_X + 1), "Показатель": M.X_NAMES,
-                             "uᵢ": [float(v) for v in base["plan"]["u"]]})
-        ed_u = st.data_editor(df_u, hide_index=True, use_container_width=True, key=k("plan"), num_rows="fixed",
-                              disabled=["№", "Показатель"], height=35 * (M.N_X + 1) + 3,
-                              column_config={"uᵢ": st.column_config.NumberColumn(
-                                  label=f"uᵢ  [{R('u')}]", format="%.4g", required=True,
-                                  min_value=LIM["u"][0], max_value=LIM["u"][1],
-                                  help=f"Допустимо: {R('u')}")})
-        cfg["plan"]["u"] = [float(v) for v in ed_u["uᵢ"]]
+        st.divider()
+        s1, s2 = st.columns([3, 2])
+        show_all = s2.toggle("Показать функции всех уравнений сразу", key="f_show_all",
+                             help="Все 153 строки на одной странице. Полей много, поэтому страница может "
+                                  "работать медленнее.")
+        if show_all:
+            eq_list = list(range(1, M.N_X + 1))
+            s1.caption("Показаны все 14 уравнений.")
+        else:
+            eq_list = [s1.selectbox("Уравнение (показатель Xᵢ), функции которого редактируются",
+                                    list(range(1, M.N_X + 1)),
+                                    format_func=lambda i: f"X{sub(i)} — {M.X_NAMES[i - 1]}", key="feq")]
+        st.caption("В строке: f(Xⱼ) и справа — её значение при введённом x; коэффициенты a₀…a₃; "
+                   "x — значение аргумента (по умолчанию равно Xⱼ(0)); Xⱼ(0) — начальное значение показателя Xⱼ. "
+                   "Изменение Xⱼ(0) меняет его и в таблице «Показатели», и во всех строках с этим аргументом.")
+        for eq_i in eq_list:
+            if show_all:
+                st.markdown(f"**Уравнение X{sub(eq_i)} — {M.X_NAMES[eq_i - 1]}**")
+            with _box():
+                eq_vals = formula_row(
+                    [{"txt": f"**Для всех f уравнения X{sub(eq_i)}:**"}]
+                    + [tk for n in range(4) for tk in (
+                        {"txt": f"a{sub(n)} ="},
+                        {"num": f"a{n}", "label": f"X{eq_i}, все f: a{n}", "value": M.DEFAULT_POLY[n],
+                         "lim": LIM["coef"], "key": k(f"da{eq_i}_{n}")})]
+                    + [{"btn": "apply", "label": "Применить", "key": k(f"dab{eq_i}")}])
+            if eq_vals["apply"]:
+                apply_eq = (eq_i, [float(eq_vals[f"a{n}"]) for n in range(4)])
+            for r in [r for r in M.f_table_rows() if r["i"] == eq_i]:
+                j, fk = r["j"], r["f"]
+                key = f"{eq_i},{j}"
+                cur = base["f_coefs"][key]
+                x0cur = float(cfg["indicators"][j - 1]["x0"])
+                kx = f"{x0cur:.6f}"        # значение X_j(0) в ключе: при его смене поля x и X_j(0) создаются заново
+                xs = f"X{sub(j)}"
 
-# Применение стандартных коэффициентов ко всем функциям
-if apply_poly:
-    for key in cfg["f_coefs"]:
-        i, j = (int(s) for s in key.split(","))
-        if (i, j) not in M.FIXED_ONE:
-            cfg["f_coefs"][key] = [d0, d1, d2, d3]
+                def A(n, cur=cur, key=key, fk=fk):
+                    return {"num": f"a{n}", "label": f"f{fk}: a{n}", "value": cur[n], "lim": LIM["coef"],
+                            "key": k(f"fc{key}_{n}")}
+
+                def f_value(out):
+                    return f"{sum(out[f'a{n}'] * out['x'] ** n for n in range(4)):.4f}"
+
+                out = formula_row([
+                    {"txt": f"**f{sub(fk)}({xs})**"},
+                    {"calc": f_value, "label": f"Значение f{fk} в уравнении X{eq_i}"},
+                    {"txt": "= a₀"}, A(0),
+                    {"txt": "+ a₁·x"}, A(1),
+                    {"txt": "+ a₂·x²"}, A(2),
+                    {"txt": "+ a₃·x³"}, A(3),
+                    {"txt": "x ="}, {"num": "x", "label": f"f{fk}: x", "value": x0cur, "lim": LIM["x"],
+                                     "key": k(f"fx{key}_{kx}")},
+                    {"txt": f"{xs}(0) ="}, {"num": "x0", "label": f"f{fk}: {xs}(0)", "value": x0cur,
+                                            "lim": LIM["x"], "key": k(f"fx0{key}_{kx}")},
+                ])
+                new = [float(out[f"a{n}"]) for n in range(4)]
+                cfg["f_coefs"][key] = new
+                base["f_coefs"][key] = list(new)     # запоминаем введённое при переключении между уравнениями
+                if abs(float(out["x0"]) - x0cur) > 1e-12:
+                    x0_changes[j] = float(out["x0"])
+
+# Начальное значение X_j(0), введённое в строке функции, переносим в показатели и обновляем все поля
+if x0_changes:
+    for j, v in x0_changes.items():
+        cfg["indicators"][j - 1]["x0"] = v
+    st.session_state.base_cfg = cfg
+    st.session_state.ver += 1
+    _rerun()
+
+# Коэффициенты a0…a3, заданные для всех функций одного уравнения
+if apply_eq:
+    ei, coefs = apply_eq
+    for r in M.f_table_rows():
+        if r["i"] == ei:
+            cfg["f_coefs"][f"{ei},{r['j']}"] = list(coefs)
     st.session_state.base_cfg = cfg
     st.session_state.ver += 1
     _rerun()
@@ -339,19 +461,13 @@ with tab_res:
     st.dataframe(table.style.format("{:.4f}", subset=table.columns[1:]), use_container_width=True,
                  height=35 * (M.N_X + 1) + 3)
 
-    series = pd.DataFrame(res.X, columns=[f"X{i}" for i in range(1, M.N_X + 1)])
-    series.insert(0, "t", res.t)
-    for m in range(M.N_Z):
-        series[f"zeta{m + 1}"] = res.zeta[:, m]
-    series["Z"] = res.Z
-
 # --------------------------------------------------------------------------- #
 #  Графики
 # --------------------------------------------------------------------------- #
 with tab_graph:
-    g1, g2, g3, g4, g5, g6, g7 = st.tabs([
-        "Динамика Xᵢ(t)", "Все показатели", "Возмущения ζ(t)", "Зависимость Xᵢ от Xⱼ",
-        "Зависимость от ζ", "Лепестковая диаграмма", "Сечения по времени",
+    g1, g2, g3, g6, g7, g8 = st.tabs([
+        "Динамика Xᵢ(t)", "Все показатели", "Возмущения ζ(t)",
+        "Лепестковая диаграмма", "Сечения по времени", "Матрица взаимовлияния",
     ])
     options = list(range(M.N_X))
     fmt = lambda i: M.X_SHORT[i]  # noqa: E731
@@ -365,22 +481,6 @@ with tab_graph:
 
     with g3:
         st.pyplot(plots.fig_zeta(res))
-
-    with g4:
-        c1, c2 = st.columns(2)
-        yi = c1.selectbox("Показатель по оси Y (Xᵢ)", options, index=0, format_func=fmt, key="ph_i")
-        xj = c2.selectbox("Показатель по оси X (Xⱼ)", options, index=1, format_func=fmt, key="ph_j")
-        st.pyplot(plots.fig_phase(res, yi, xj))
-
-    with g5:
-        c1, c2 = st.columns([1, 2])
-        zi = c1.selectbox("Возмущение", list(range(1, M.N_Z + 1)), format_func=lambda m: M.ZETA_NAMES[m - 1],
-                          key="sens_z")
-        sel_s = c2.multiselect("Показатели", options, default=[0, 1, 3, 4, 8, 13], format_func=fmt, key="sel_sens")
-        st.caption("Возмущение ζₘ фиксируется на постоянном уровне 0…1, остальные берутся из входных данных; "
-                   "показаны значения в конце горизонта T.")
-        sens = M.sensitivity(cfg, zi, np.linspace(0.0, 1.0, 21))
-        st.pyplot(plots.fig_sensitivity(sens, zi, sel_s))
 
     with g6:
         col_plot, col_ctrl = st.columns([1, 1])
@@ -399,6 +499,12 @@ with tab_graph:
         st.caption("Лепестковые диаграммы в моменты t = 0, 0.2T, 0.4T, 0.6T, 0.8T, T "
                    "(при T = 1: 0; 0.2; 0.4; 0.6; 0.8; 1).")
         st.pyplot(plots.fig_radar_grid(res))
+
+    with g8:
+        st.caption("Строка — показатель Xᵢ, столбец — влияющий на него показатель Xⱼ. "
+                   "1 — Xⱼ ускоряет рост Xᵢ, −1 — замедляет, 0 — не влияет. "
+                   "Таблицу можно выделить и скопировать в Excel.")
+        st.markdown(matrix_html(M.influence_sign_matrix(cfg)[:, :M.N_X]), unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------- #
 #  Формулы

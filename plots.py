@@ -1,10 +1,11 @@
 """Построение графиков (matplotlib, объектный интерфейс - без pyplot, безопасно для Streamlit)."""
 from __future__ import annotations
 
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
 
 import numpy as np
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 from model import N_X, X_SHORT, ZETA_NAMES, Result
 
@@ -18,8 +19,45 @@ def _color(i: int) -> str:
     return _COLORS[i % len(_COLORS)]
 
 
+def _label_ends(ax, x_end: float, ys: Sequence[float], labels: Sequence[str], colors: Sequence[str],
+                fontsize: int = 8, extra: float = 0.11) -> None:
+    """Подписывает каждую кривую у её правого конца (X1, X2, ...), разводя надписи по вертикали,
+    чтобы они не налезали друг на друга; от кривой к подписи идёт тонкая линия-выноска.
+
+    Нужно вызывать после того, как заданы пределы оси Y."""
+    if not len(ys):
+        return
+    x0, x1 = ax.get_xlim()
+    span = x1 - x0
+    ax.set_xlim(x0, x1 + extra * span)
+    ymin, ymax = ax.get_ylim()
+    gap = (ymax - ymin) * 0.048
+    order = sorted(range(len(ys)), key=lambda n: ys[n])
+    pos = [0.0] * len(ys)
+    prev = -1e18
+    for n in order:                       # проход снизу вверх: раздвигаем слишком близкие подписи
+        pos[n] = max(ys[n], prev + gap)
+        prev = pos[n]
+    limit = ymax                          # проход сверху вниз: не выходим за верхний край оси
+    for n in reversed(order):
+        pos[n] = min(pos[n], limit)
+        limit = pos[n] - gap
+    for n in range(len(ys)):
+        ax.annotate(
+            labels[n], xy=(x_end, ys[n]), xytext=(x_end + 0.035 * span, pos[n]),
+            color=colors[n], fontsize=fontsize, fontweight="bold", va="center", ha="left",
+            arrowprops=dict(arrowstyle="-", color=colors[n], lw=0.7, shrinkA=0, shrinkB=0),
+            annotation_clip=False,
+        )
+
+
+def _short(name: str) -> str:
+    """'X12 Транзакции' -> 'X12', 'ζ3 ...' -> 'ζ3'."""
+    return name.split()[0]
+
+
 def fig_dynamics(res: Result, selected: Sequence[int], show_target: bool = True) -> Figure:
-    """X_i(t) для выбранных показателей (индексы с 0)."""
+    """X_i(t) для выбранных показателей (индексы с 0); каждая кривая подписана."""
     fig = Figure(figsize=(10, 5.2), dpi=100)
     ax = fig.add_subplot(111)
     for i in selected:
@@ -31,6 +69,15 @@ def fig_dynamics(res: Result, selected: Sequence[int], show_target: bool = True)
     ax.set_title("Динамика показателей (пунктир - рекомендованные X*)", fontsize=11)
     ax.grid(alpha=0.3)
     if selected:
+        lo = min(float(res.X[:, i].min()) for i in selected)
+        hi = max(float(res.X[:, i].max()) for i in selected)
+        if show_target:
+            hi = max(hi, max(float(res.cfg["indicators"][i]["xstar"]) for i in selected))
+        pad = 0.05 * max(hi - lo, 0.2)
+        ax.set_ylim(lo - pad, hi + pad)
+        ax.set_xlim(res.t[0], res.t[-1])
+        _label_ends(ax, res.t[-1], [float(res.X[-1, i]) for i in selected],
+                    [_short(X_SHORT[i]) for i in selected], [_color(i) for i in selected])
         ax.legend(fontsize=8, ncol=2, loc="center left", bbox_to_anchor=(1.0, 0.5))
     fig.tight_layout()
     return fig
@@ -45,7 +92,7 @@ def fig_small_multiples(res: Result) -> Figure:
         ax.plot(res.t, res.X[:, i], color=_color(i), lw=1.6)
         ax.axhline(ind["xstar"], color="k", lw=0.7, ls=":")
         ax.set_ylim(ind["xmin"] - 0.03, ind["xmax"] + 0.03)
-        ax.set_title(X_SHORT[i], fontsize=8)
+        ax.set_title(X_SHORT[i], fontsize=8, color=_color(i), fontweight="bold")
         ax.tick_params(labelsize=7)
         ax.grid(alpha=0.3)
     ax = fig.add_subplot(4, 4, 15)
@@ -58,16 +105,20 @@ def fig_small_multiples(res: Result) -> Figure:
 
 
 def fig_zeta(res: Result) -> Figure:
-    """Профили возмущений ζ_m(t)."""
+    """Профили возмущений ζ_m(t); каждая кривая подписана (ζ1 ... ζ5)."""
     fig = Figure(figsize=(10, 4), dpi=100)
     ax = fig.add_subplot(111)
+    cols = [_color(m) for m in range(res.zeta.shape[1])]
     for m in range(res.zeta.shape[1]):
-        ax.plot(res.t, res.zeta[:, m], lw=1.8, label=ZETA_NAMES[m])
+        ax.plot(res.t, res.zeta[:, m], lw=1.8, color=cols[m], label=ZETA_NAMES[m])
     ax.set_ylim(-0.02, 1.02)
+    ax.set_xlim(res.t[0], res.t[-1])
     ax.set_xlabel("Время t")
     ax.set_ylabel("ζ(t)")
     ax.set_title("Возмущения ζ_m(t)")
     ax.grid(alpha=0.3)
+    _label_ends(ax, res.t[-1], [float(res.zeta[-1, m]) for m in range(res.zeta.shape[1])],
+                [_short(ZETA_NAMES[m]) for m in range(res.zeta.shape[1])], cols, fontsize=9)
     ax.legend(fontsize=8, loc="center left", bbox_to_anchor=(1.0, 0.5))
     fig.tight_layout()
     return fig
@@ -84,7 +135,7 @@ def fig_phase(res: Result, i: int, j: int) -> Figure:
     fig.colorbar(sc, ax=ax, label="Время t")
     ax.set_xlabel(X_SHORT[j])
     ax.set_ylabel(X_SHORT[i])
-    ax.set_title(f"Зависимость {X_SHORT[i].split()[0]} от {X_SHORT[j].split()[0]}")
+    ax.set_title(f"Зависимость {_short(X_SHORT[i])} от {_short(X_SHORT[j])}")
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
     fig.tight_layout()
@@ -92,24 +143,29 @@ def fig_phase(res: Result, i: int, j: int) -> Figure:
 
 
 def fig_sensitivity(sens: Dict[str, np.ndarray], zeta_index: int, selected: Sequence[int]) -> Figure:
-    """Зависимость X_i(T) и Z(T) от уровня возмущения ζ_m."""
+    """Зависимость X_i(T) и Z(T) от уровня возмущения ζ_m; кривые подписаны."""
     fig = Figure(figsize=(11, 4.6), dpi=100)
     ax1 = fig.add_subplot(1, 2, 1)
     ax2 = fig.add_subplot(1, 2, 2)
     lv = sens["levels"]
     for i in selected:
         ax1.plot(lv, sens["X_final"][:, i], color=_color(i), lw=1.6, label=X_SHORT[i])
-    ax1.set_xlabel(f"Уровень {ZETA_NAMES[zeta_index - 1].split()[0]}")
+    ax1.set_xlabel(f"Уровень {_short(ZETA_NAMES[zeta_index - 1])}")
     ax1.set_ylabel("X_i(T)")
     ax1.set_title("Конечные значения показателей")
     ax1.grid(alpha=0.3)
     if selected:
-        ax1.legend(fontsize=7, ncol=1, loc="center left", bbox_to_anchor=(1.0, 0.5))
-    ax2.plot(lv, sens["Z_final"], color="k", lw=2)
-    ax2.set_xlabel(f"Уровень {ZETA_NAMES[zeta_index - 1].split()[0]}")
+        ax1.set_xlim(lv[0], lv[-1])
+        ax1.set_ylim(-0.05, 1.05)
+        _label_ends(ax1, lv[-1], [float(sens["X_final"][-1, i]) for i in selected],
+                    [_short(X_SHORT[i]) for i in selected], [_color(i) for i in selected], fontsize=7, extra=0.14)
+        ax1.legend(fontsize=7, ncol=1, loc="upper center", bbox_to_anchor=(0.5, -0.18))
+    ax2.plot(lv, sens["Z_final"], color="k", lw=2, label="Z(T)")
+    ax2.set_xlabel(f"Уровень {_short(ZETA_NAMES[zeta_index - 1])}")
     ax2.set_ylabel("Z(T)")
     ax2.set_title("Целевая функция")
     ax2.grid(alpha=0.3)
+    ax2.legend(fontsize=8, loc="best")
     fig.tight_layout()
     return fig
 
@@ -123,7 +179,7 @@ def fig_radar_grid(res: Result, fractions: Sequence[float] = (0.0, 0.2, 0.4, 0.6
     star = np.clip((np.array([d["xstar"] for d in ind], dtype=float) - lo) / rng, 0.0, 1.0)
     ang = np.linspace(0, 2 * np.pi, N_X, endpoint=False)
     ang_c = np.concatenate([ang, ang[:1]])
-    fig = Figure(figsize=(12, 8.5), dpi=100)
+    fig = Figure(figsize=(12, 8.9), dpi=100)
     for n, fr in enumerate(fractions):
         idx = int(np.argmin(np.abs(res.t - fr * res.t[-1])))
         v = np.clip((res.X[idx] - lo) / rng, 0.0, 1.0)
@@ -139,8 +195,11 @@ def fig_radar_grid(res: Result, fractions: Sequence[float] = (0.0, 0.2, 0.4, 0.6
         ax.set_yticks([0.5, 1.0])
         ax.set_yticklabels(["0.5", "1"], fontsize=6, color="gray")
         ax.set_title(f"t = {res.t[idx]:.2f}", fontsize=10, pad=16)
-    fig.suptitle("Сечения: лепестковые диаграммы (красный - расчёт, зелёный пунктир - X*)", fontsize=11)
-    fig.tight_layout(h_pad=3.5)
+    fig.suptitle("Сечения по времени: лепестковые диаграммы показателей", fontsize=11)
+    handles: List[Line2D] = [Line2D([0], [0], color="#d62728", lw=1.8, label="Расчёт X(t)"),
+                             Line2D([0], [0], color="#2ca02c", lw=1.0, ls="--", label="Рекомендованные X*")]
+    fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=9, frameon=False)
+    fig.tight_layout(h_pad=3.5, rect=(0, 0.04, 1, 0.97))
     return fig
 
 
