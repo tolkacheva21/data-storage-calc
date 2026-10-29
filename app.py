@@ -64,7 +64,8 @@ def formula_row(tokens: list) -> dict:
       {"show": "текст", "label"}            - поле только для чтения.
     Возвращает словарь {имя: введённое число}."""
     plain = lambda s: re.sub(r"<[^>]+>|\*\*", "", s)   # noqa: E731  длина текста без разметки
-    widths = [max(0.45, 0.115 * len(plain(t["txt"]))) if "txt" in t else 1.25 for t in tokens]
+    widths = [t["w"] if "w" in t else (max(0.45, 0.115 * len(plain(t["txt"]))) if "txt" in t else 1.25)
+              for t in tokens]
     cols = _cols(widths)
     out, deferred = {}, []
     for col, t in zip(cols, tokens):
@@ -89,16 +90,29 @@ def formula_row(tokens: list) -> dict:
 
 
 def matrix_html(S) -> str:
-    """Знаковая матрица X → X в виде обычной таблицы (как в Excel): значения 1, -1, 0, без графики."""
-    cols = [f"X{n}" for n in range(1, M.N_X + 1)]
-    head = "<th></th>" + "".join(f"<th>{c}</th>" for c in cols)
-    body = "".join(
-        f"<tr><th>X{i + 1}</th>" + "".join(f"<td>{int(v)}</td>" for v in row) + "</tr>"
-        for i, row in enumerate(S))
+    """Знаковая матрица (строки - X1..X14, колонки - X1..X14 и ζ1..ζ5) в виде обычной таблицы:
+    значения 1, -1, 0, без графики."""
+    xcols = [f"X{n}" for n in range(1, M.N_X + 1)]
+    zcols = [f"ζ{m}" for m in range(1, M.N_Z + 1)]
+    head1 = (f'<tr><th rowspan="2">Показатель</th>'
+             f'<th colspan="{M.N_X}">Влияние показателей Xⱼ</th>'
+             f'<th colspan="{M.N_Z}" class="zs">Влияние возмущений ζₘ</th></tr>')
+    head2 = ("<tr>"
+             + "".join(f'<th title="{M.X_NAMES[n]}">{c}</th>' for n, c in enumerate(xcols))
+             + "".join(f'<th class="{"zs" if m == 0 else ""}" title="{M.ZETA_NAMES[m]}">{c}</th>'
+                       for m, c in enumerate(zcols))
+             + "</tr>")
+    body = ""
+    for i, row in enumerate(S):
+        cells = "".join(f'<td class="{"zs" if c == M.N_X else ""}">{int(v)}</td>' for c, v in enumerate(row))
+        body += f'<tr><th class="rl" title="{M.X_NAMES[i]}">{M.X_SHORT[i]}</th>{cells}</tr>'
     css = ("<style>.mx{border-collapse:collapse;font-size:0.95rem}"
            ".mx th,.mx td{border:1px solid rgba(128,128,128,.7);padding:4px 12px;text-align:center}"
-           ".mx td{font-style:italic}.mx th{font-weight:700}</style>")
-    return css + f'<div style="overflow-x:auto"><table class="mx"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+           ".mx td{font-style:italic}.mx th{font-weight:700}"
+           ".mx .rl{text-align:left;white-space:nowrap}"
+           ".mx .zs{border-left:3px solid rgba(128,128,128,1)}</style>")
+    return (css + '<div style="overflow-x:auto"><table class="mx"><thead>' + head1 + head2
+            + f"</thead><tbody>{body}</tbody></table></div>")
 
 
 # --------------------------------------------------------------------------- #
@@ -302,37 +316,32 @@ with tab_in:
     # ---- функции f
     with sub_f:
         st.write(
-            "Вспомогательные функции fₖ(Xⱼ) заданы полиномами **f(x) = a₀ + a₁·x + a₂·x² + a₃·x³**. "
+            "Вспомогательные функции fₖ(Xⱼ) заданы полиномами "
+            "**fₖ(Xᵢ) = a₀ + a₁·Xᵢ + a₂·Xᵢ² + a₃·Xᵢ³**, "
+            "где Xᵢ — показатель, чьё уравнение редактируется (в уравнении X₁ все функции записаны через X₁, "
+            "в уравнении X₂ — через X₂ и т.д.). "
             "В документе они названы «полиномами невысокой степени», коэффициенты не приведены — "
-            "их можно менять ниже: у каждого уравнения есть строка «Задать для всех функций уравнения» "
-            "(поля a₀…a₃ и кнопка), а в каждой строке функции поля стоят справа от обозначений. Редактируются все строки; "
-            "по документу f₁(X₁), f₁₆(X₂), f₆₇(X₆), f₁₀₄(X₁₀) равны 1 (a₀ = 1, остальные 0)."
+            "их можно менять ниже. Функции сгруппированы по уравнениям: сначала все функции уравнения X₁ "
+            "(f₁…f₁₄), ниже — уравнения X₂ (f₁₅…f₂₈) и т.д. У каждого уравнения есть строка "
+            "«Для всех f уравнения» (поля a₀…a₃ и кнопка «Применить»). "
+            "По документу f₁(X₁), f₁₆(X₂), f₆₇(X₆), f₁₀₄(X₁₀) равны 1 (a₀ = 1, остальные 0)."
         )
         st.info(
             "**Допустимые значения:**\n"
-            f"- коэффициенты a₀, a₁, a₂, a₃ (и в строке функции, и в поле «для всех функций уравнения») — {R('coef')};\n"
-            f"- x (значение аргумента, при котором считается f) и Xⱼ(0) (начальное значение показателя) — {R('x')}."
+            f"- коэффициенты a₀, a₁, a₂, a₃ (и в строке функции, и в строке «для всех f уравнения») — {R('coef')};\n"
+            f"- Xᵢ(0) (начальное значение показателя) — {R('x')}."
         )
         rnd_f = st.button("Рандомизировать коэффициенты f", key=k("rf"))
-
+        st.caption("В строке: fₖ(Xᵢ), справа — её значение при текущем Xᵢ(0); коэффициенты a₀…a₃ стоят "
+                   "рядом со своими степенями Xᵢ; Xᵢ(0) — начальное значение показателя Xᵢ. "
+                   "Изменение Xᵢ(0) меняет его и в таблице «Показатели», и во всех строках этого уравнения.")
         st.divider()
-        s1, s2 = st.columns([3, 2])
-        show_all = s2.toggle("Показать функции всех уравнений сразу", key="f_show_all",
-                             help="Все 153 строки на одной странице. Полей много, поэтому страница может "
-                                  "работать медленнее.")
-        if show_all:
-            eq_list = list(range(1, M.N_X + 1))
-            s1.caption("Показаны все 14 уравнений.")
-        else:
-            eq_list = [s1.selectbox("Уравнение (показатель Xᵢ), функции которого редактируются",
-                                    list(range(1, M.N_X + 1)),
-                                    format_func=lambda i: f"X{sub(i)} — {M.X_NAMES[i - 1]}", key="feq")]
-        st.caption("В строке: f(Xⱼ) и справа — её значение при введённом x; коэффициенты a₀…a₃; "
-                   "x — значение аргумента (по умолчанию равно Xⱼ(0)); Xⱼ(0) — начальное значение показателя Xⱼ. "
-                   "Изменение Xⱼ(0) меняет его и в таблице «Показатели», и во всех строках с этим аргументом.")
-        for eq_i in eq_list:
-            if show_all:
-                st.markdown(f"**Уравнение X{sub(eq_i)} — {M.X_NAMES[eq_i - 1]}**")
+
+        all_rows = M.f_table_rows()
+        for eq_i in range(1, M.N_X + 1):
+            rows = [r for r in all_rows if r["i"] == eq_i]
+            fmin, fmax = min(r["f"] for r in rows), max(r["f"] for r in rows)
+            st.markdown(f"#### Уравнение X{sub(eq_i)} — {M.X_NAMES[eq_i - 1]}  (f{sub(fmin)}…f{sub(fmax)})")
             with _box():
                 eq_vals = formula_row(
                     [{"txt": f"**Для всех f уравнения X{sub(eq_i)}:**"}]
@@ -343,38 +352,38 @@ with tab_in:
                     + [{"btn": "apply", "label": "Применить", "key": k(f"dab{eq_i}")}])
             if eq_vals["apply"]:
                 apply_eq = (eq_i, [float(eq_vals[f"a{n}"]) for n in range(4)])
-            for r in [r for r in M.f_table_rows() if r["i"] == eq_i]:
+            xs = f"X{sub(eq_i)}"          # во всех функциях уравнения Xᵢ аргумент - сам Xᵢ
+            x0cur = float(cfg["indicators"][eq_i - 1]["x0"])
+            kx = f"{x0cur:.6f}"           # при смене Xᵢ(0) поля создаются заново
+            for r in rows:
                 j, fk = r["j"], r["f"]
                 key = f"{eq_i},{j}"
                 cur = base["f_coefs"][key]
-                x0cur = float(cfg["indicators"][j - 1]["x0"])
-                kx = f"{x0cur:.6f}"        # значение X_j(0) в ключе: при его смене поля x и X_j(0) создаются заново
-                xs = f"X{sub(j)}"
 
                 def A(n, cur=cur, key=key, fk=fk):
                     return {"num": f"a{n}", "label": f"f{fk}: a{n}", "value": cur[n], "lim": LIM["coef"],
                             "key": k(f"fc{key}_{n}")}
 
                 def f_value(out):
-                    return f"{sum(out[f'a{n}'] * out['x'] ** n for n in range(4)):.4f}"
+                    return f"{sum(out[f'a{n}'] * out['x0'] ** n for n in range(4)):.4f}"
 
+                # "\\+" - чтобы markdown не превращал строку, начинающуюся с «+», в маркер списка
                 out = formula_row([
-                    {"txt": f"**f{sub(fk)}({xs})**"},
+                    {"txt": f"**f{sub(fk)}({xs})**", "w": 1.1},
                     {"calc": f_value, "label": f"Значение f{fk} в уравнении X{eq_i}"},
-                    {"txt": "= a₀"}, A(0),
-                    {"txt": "+ a₁·x"}, A(1),
-                    {"txt": "+ a₂·x²"}, A(2),
-                    {"txt": "+ a₃·x³"}, A(3),
-                    {"txt": "x ="}, {"num": "x", "label": f"f{fk}: x", "value": x0cur, "lim": LIM["x"],
-                                     "key": k(f"fx{key}_{kx}")},
-                    {"txt": f"{xs}(0) ="}, {"num": "x0", "label": f"f{fk}: {xs}(0)", "value": x0cur,
-                                            "lim": LIM["x"], "key": k(f"fx0{key}_{kx}")},
+                    {"txt": "**=** a₀", "w": 0.7}, A(0),
+                    {"txt": f"\\+ a₁·{xs}", "w": 0.9}, A(1),
+                    {"txt": f"\\+ a₂·{xs}²", "w": 0.9}, A(2),
+                    {"txt": f"\\+ a₃·{xs}³", "w": 0.9}, A(3),
+                    {"txt": f"{xs}(0) =", "w": 0.9},
+                    {"num": "x0", "label": f"f{fk}: {xs}(0)", "value": x0cur, "lim": LIM["x"],
+                     "key": k(f"fx0{key}_{kx}")},
                 ])
                 new = [float(out[f"a{n}"]) for n in range(4)]
                 cfg["f_coefs"][key] = new
-                base["f_coefs"][key] = list(new)     # запоминаем введённое при переключении между уравнениями
+                base["f_coefs"][key] = list(new)     # запоминаем введённое
                 if abs(float(out["x0"]) - x0cur) > 1e-12:
-                    x0_changes[j] = float(out["x0"])
+                    x0_changes[eq_i] = float(out["x0"])
 
 # Начальное значение X_j(0), введённое в строке функции, переносим в показатели и обновляем все поля
 if x0_changes:
@@ -501,10 +510,10 @@ with tab_graph:
         st.pyplot(plots.fig_radar_grid(res))
 
     with g8:
-        st.caption("Строка — показатель Xᵢ, столбец — влияющий на него показатель Xⱼ. "
-                   "1 — Xⱼ ускоряет рост Xᵢ, −1 — замедляет, 0 — не влияет. "
+        st.caption("Строка — показатель Xᵢ, столбец — влияющий на него показатель Xⱼ или возмущение ζₘ. "
+                   "1 — фактор ускоряет рост Xᵢ, −1 — замедляет, 0 — не влияет. "
                    "Таблицу можно выделить и скопировать в Excel.")
-        st.markdown(matrix_html(M.influence_sign_matrix(cfg)[:, :M.N_X]), unsafe_allow_html=True)
+        st.markdown(matrix_html(M.influence_sign_matrix(cfg)), unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------- #
 #  Формулы
