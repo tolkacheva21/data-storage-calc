@@ -21,6 +21,9 @@ LIM = M.LIMITS
 
 _SUB = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
 
+COL_X0 = "Начальные условия X(0)"
+COL_XSTAR = "Калибровочный коэффициент X*"
+
 
 def sub(n) -> str:
     """Число нижним индексом: 12 -> ₁₂."""
@@ -156,14 +159,132 @@ tab_in, tab_res, tab_graph, tab_eq = st.tabs(
 )
 
 
-def render_equations():
-    """Уравнения в том виде, как записаны в документе: 1/max Xᵢ* в числителе, f(X(t)), ζ(t), p(t)."""
-    st.write("Уравнения модели в записи документа. Масштаб τ в формулы не входит: он используется только "
-             "в расчёте (множитель правой части), см. вкладку «Общие параметры».")
+def _poly_latex(c, x, j) -> str:
+    """Полином с подставленными коэффициентами (из вкладки «Функции fₖ»), затем с подставленным
+    значением X_j:  a0 + a1·X_j + ...  =  a0 + a1·0.800 + ..."""
+    terms_sym, terms_num = [], []
+    for n in range(4):
+        if n == 0:
+            terms_sym.append(f"{c[0]:g}")
+            terms_num.append(f"{c[0]:g}")
+        elif abs(c[n]) > 1e-12:
+            pw = "" if n == 1 else f"^{{{n}}}"
+            terms_sym.append(f"{c[n]:g}\\cdot X_{{{j}}}{pw}")
+            terms_num.append(f"{c[n]:g}\\cdot{x:.3f}{pw}")
+    return " + ".join(terms_sym) + " = " + " + ".join(terms_num)
+
+
+def _prod_latex(name: str, vals) -> str:
+    """P = 1.0000 · 1.0600 · … = 0.7312 (длинное произведение переносится по 7 множителей)."""
+    chunks = [vals[n:n + 7] for n in range(0, len(vals), 7)]
+    lines = [" \\cdot ".join(f"{v:.4f}" for v in ch) for ch in chunks]
+    body = " \\cdot \\\\ &\\quad ".join(lines)
+    return f"\\begin{{aligned}}{name} &= {body} = {float(np.prod(vals)):.4f}\\end{{aligned}}"
+
+
+def render_substitution(cfg: dict, res, idx: int, i: int):
+    """Под уравнением X_i: как в него подставляются f_k, ζ_m и что получается для dX_i/dt в момент t."""
+    eq = M.EQUATIONS[i]
+    x, z = res.X[idx], res.zeta[idx]
+    tau = float(cfg["tau"])
+    xstar = float(cfg["indicators"][i - 1]["xstar"])
+
+    def f_lines(items):
+        lines, vals = [], []
+        for kf, j in items:
+            c = [float(v) for v in cfg["f_coefs"][f"{i},{j}"]] + [0.0] * 4
+            xv = float(x[j - 1])
+            val = M.f_value(cfg, i, j, xv)
+            vals.append(val)
+            lines.append(f"f_{{{kf}}}(X_{{{j}}}) &= {_poly_latex(c, xv, j)} = {val:.4f}")
+        return lines, vals
+
+    def show_lines(lines):
+        if len(lines) > 4:                       # длинные списки - в две колонки
+            half = (len(lines) + 1) // 2
+            for col, part in zip(st.columns(2), (lines[:half], lines[half:])):
+                col.latex(r"\begin{aligned}" + r" \\ ".join(part) + r"\end{aligned}")
+        else:
+            st.latex(r"\begin{aligned}" + r" \\ ".join(lines) + r"\end{aligned}")
+
+    p_lines, p_vals = f_lines(eq.p)
+    q_lines, q_vals = f_lines(eq.q)
+    P = float(np.prod(p_vals)) if p_vals else 1.0
+    Q = float(np.prod(q_vals)) if q_vals else 1.0
+
+    zs = lambda ms: "(" + " + ".join(f"{z[m - 1]:.4f}" for m in ms) + ")"   # noqa: E731
+    qs = f"{Q:.4f}\\cdot" if q_vals else ""
+    if eq.kind == "std":
+        v = P * sum(z[m - 1] for m in eq.plus) - Q * sum(z[m - 1] for m in eq.minus)
+        expr = f"{P:.4f}\\cdot{zs(eq.plus)}"
+        if eq.minus:
+            expr += f" - {qs}{zs(eq.minus)}"
+    elif eq.kind == "sub":
+        v = P - Q * sum(z[m - 1] for m in eq.minus)
+        expr = f"{P:.4f} - {qs}{zs(eq.minus)}"
+    elif eq.kind == "x4":
+        v = P * z[4] - (sum(z[m - 1] for m in (1, 2, 3, 4)) + Q)
+        expr = f"{P:.4f}\\cdot{z[4]:.4f} - ({zs((1, 2, 3, 4))} + {Q:.4f})"
+    else:
+        return
+    dx = tau * v / xstar
+
+    st.markdown(f"**Подстановка чисел в уравнение X{sub(i)} при t = {res.t[idx]:.2f}** "
+                f"(значения Xⱼ(t) и ζₘ(t) взяты из расчёта):")
+    st.markdown("1) Значения функций fₖ(Xⱼ): коэффициенты a₀…a₃ из вкладки «Функции fₖ», "
+                "затем вместо Xⱼ подставлено его значение в момент t:")
+    show_lines(p_lines)
+    st.markdown("2) Произведение функций" + (" (множитель P):" if q_vals else ":"))
+    st.latex(_prod_latex("P", p_vals))
+    if q_vals:
+        st.markdown("Функции второго произведения (множитель Q):")
+        show_lines(q_lines)
+        st.latex(_prod_latex("Q", q_vals))
+    st.markdown("3) Возмущения в этот момент и значение выражения в скобках v:")
+    st.latex(r",\ ".join(f"\\zeta_{{{m}}}={z[m - 1]:.4f}" for m in range(1, M.N_Z + 1)))
+    st.latex(f"v = {expr} = {v:.4f}")
+    st.markdown("4) Скорость изменения показателя (с масштабом τ и множителем 1/X*):")
+    st.latex(f"\\frac{{dX_{{{i}}}}}{{dt}} = \\tau\\cdot\\frac{{1}}{{X_{{{i}}}^{{*}}}}\\cdot v = "
+             f"{tau:g}\\cdot\\frac{{1}}{{{xstar:g}}}\\cdot({v:.4f}) = {dx:.5f}")
+
+
+def render_equations(cfg=None, res=None):
+    """Уравнения в записи документа; под каждым - то же уравнение с числами и (по желанию)
+    пошаговая подстановка. Числа берутся из вкладки «Ввод данных» (коэффициенты fₖ, возмущения,
+    X*, τ) и из расчёта (значения Xⱼ(t) в выбранный момент)."""
+    st.write("Уравнения модели в записи документа. Масштаб τ в символьные формулы не входит: он используется "
+             "только в расчёте (множитель правой части), см. вкладку «Общие параметры».")
+    idx = 0
+    detail = True
+    if res is not None:
+        step = float(res.t[1] - res.t[0])
+        tsel = st.slider("Момент времени t, для которого показана подстановка чисел под формулами",
+                         min_value=0.0, max_value=float(res.t[-1]), value=0.0, step=step,
+                         key=f"eq_t_{cfg['T']:g}_{cfg['dt']:g}")
+        idx = int(np.argmin(np.abs(res.t - tsel)))
+        detail = st.checkbox("Показывать пошаговую подстановку под каждой формулой", value=True,
+                             key="eq_detail")
+    else:
+        st.info("Подстановка чисел под формулами появится после исправления ошибок на вкладке «1. Ввод данных».")
     for i in range(1, M.N_X + 1):
         st.markdown(f"Общий вид уравнения, характеризующего изменение во времени {M.DOC_DESCRIPTIONS[i]} "
                     f"(переменная X{sub(i)}):")
         st.latex(M.equation_latex(i) + r"\qquad (" + M.DOC_NUMBERS[i] + ")")
+        if res is not None:
+            x, z = res.X[idx], res.zeta[idx]
+            tau = float(cfg["tau"])
+            xstar = float(cfg["indicators"][i - 1]["xstar"])
+            st.markdown(f"То же уравнение с числами при t = {res.t[idx]:.2f}: значения fₖ посчитаны по "
+                        f"коэффициентам из «Функции fₖ», ζₘ — по профилям возмущений:")
+            st.latex(M.equation_latex(
+                i,
+                f_repr=lambda kf, j, i=i: f"{M.f_value(cfg, i, j, float(x[j - 1])):.4f}",
+                z_repr=lambda m: f"{z[m - 1]:.4f}",
+                prefix=rf"{tau:g}\cdot\frac{{1}}{{{xstar:g}}}",
+            ))
+            if detail:
+                render_substitution(cfg, res, idx, i)
+            st.divider()
 
 cfg = copy.deepcopy(base)
 apply_eq = None      # (номер уравнения, [a0, a1, a2, a3]) - «задать для всех функций уравнения»
@@ -205,18 +326,18 @@ with tab_in:
         st.info(
             "**Допустимые значения:**\n"
             f"- Xmin и Xmax(минимум и максимум) — {R('x')}, при этом Xmax должен быть больше Xmin;\n"
-            f"- X(0) (начальные условия) — {R('x')};\n"
-            f"- X* (рекомендованное значение) — {R('xstar')};\n"
+            f"- Начальные условия X(0) — {R('x')};\n"
+            f"- Калибровочный коэффициент X* — {R('xstar')};\n"
             f"- γ (вес) — {R('gamma')}."
         )
         b1, b2, _ = st.columns([1, 1, 3])
-        rnd_x0 = b1.button("Рандомизировать X(0)", key=k("rx0"))
-        rnd_xstar = b2.button("Рандомизировать X*", key=k("rxs"))
+        rnd_x0 = b1.button("Рандомизировать начальные условия", key=k("rx0"))
+        rnd_xstar = b2.button("Рандомизировать калибровочные коэффициенты", key=k("rxs"))
         df_ind = pd.DataFrame({
             "№": range(1, M.N_X + 1),
             "Показатель": M.X_NAMES,
-            "X(0)": [d["x0"] for d in base["indicators"]],
-            "X* (рекоменд.)": [d["xstar"] for d in base["indicators"]],
+            COL_X0: [d["x0"] for d in base["indicators"]],
+            COL_XSTAR: [d["xstar"] for d in base["indicators"]],
             "Xmin": [d["xmin"] for d in base["indicators"]],
             "Xmax": [d["xmax"] for d in base["indicators"]],
             "γ (вес)": [d["gamma"] for d in base["indicators"]],
@@ -226,31 +347,25 @@ with tab_in:
             df_ind, hide_index=True, use_container_width=True, key=k("ind"), num_rows="fixed",
             disabled=["№", "Показатель"],
             column_config={
-                "X(0)": num(label=f"X(0)  [{R('x')}]", format="%.4g", required=True,
-                            min_value=LIM["x"][0], max_value=LIM["x"][1],
-                            help=f"Допустимо: {R('x')}"),
-                "X* (рекоменд.)": num(label=f"X*  [{R('xstar')}]", format="%.4g", required=True,
-                                      min_value=LIM["xstar"][0], max_value=LIM["xstar"][1],
-                                      help=f"Допустимо: {R('xstar')}"),
-                "Xmin": num(label=f"Xmin  [{R('x')}]", format="%.4g", required=True,
-                            min_value=LIM["x"][0], max_value=LIM["x"][1],
-                            help=f"Допустимо: {R('x')}, меньше Xmax"),
-                "Xmax": num(label=f"Xmax  [{R('x')}]", format="%.4g", required=True,
-                            min_value=LIM["x"][0], max_value=LIM["x"][1],
-                            help=f"Допустимо: {R('x')}, больше Xmin"),
-                "γ (вес)": num(label=f"γ (вес)  [{R('gamma')}]", format="%.4g", required=True,
-                               min_value=LIM["gamma"][0], max_value=LIM["gamma"][1],
-                               help=f"Допустимо: {R('gamma')}"),
+                COL_X0: num(format="%.4g", required=True,
+                            min_value=LIM["x"][0], max_value=LIM["x"][1]),
+                COL_XSTAR: num(format="%.4g", required=True,
+                               min_value=LIM["xstar"][0], max_value=LIM["xstar"][1]),
+                "Xmin": num(format="%.4g", required=True,
+                            min_value=LIM["x"][0], max_value=LIM["x"][1]),
+                "Xmax": num(format="%.4g", required=True,
+                            min_value=LIM["x"][0], max_value=LIM["x"][1]),
+                "γ (вес)": num(format="%.4g", required=True,
+                               min_value=LIM["gamma"][0], max_value=LIM["gamma"][1]),
             },
             height=35 * (M.N_X + 1) + 3,
         )
         for _, row in ed_ind.iterrows():
             n = int(row["№"]) - 1
             cfg["indicators"][n] = {
-                "x0": float(row["X(0)"]), "xstar": float(row["X* (рекоменд.)"]),
+                "x0": float(row[COL_X0]), "xstar": float(row[COL_XSTAR]),
                 "xmin": float(row["Xmin"]), "xmax": float(row["Xmax"]), "gamma": float(row["γ (вес)"]),
             }
-
     # ---- возмущения
     with sub_zeta:
         st.write("Возмущение ζₘ(t) — внешний фактор со значением от 0 до 1, которое меняется со временем. "
@@ -317,9 +432,9 @@ with tab_in:
     with sub_f:
         st.write(
             "Вспомогательные функции fₖ(Xⱼ) заданы полиномами "
-            "**fₖ(Xᵢ) = a₀ + a₁·Xᵢ + a₂·Xᵢ² + a₃·Xᵢ³**, "
-            "где Xᵢ — показатель, чьё уравнение редактируется (в уравнении X₁ все функции записаны через X₁, "
-            "в уравнении X₂ — через X₂ и т.д.). "
+            "**fₖ(Xⱼ) = a₀ + a₁·Xⱼ + a₂·Xⱼ² + a₃·Xⱼ³**, "
+            "где Xⱼ — показатель, который стоит в скобках функции в уравнении (например, в уравнении X₁ "
+            "функция f₂ зависит от X₂, f₃ — от X₃ и т.д.; так же, как на вкладке «Формулы модели»). "
             "В документе они названы «полиномами невысокой степени», коэффициенты не приведены — "
             "их можно менять ниже. Функции сгруппированы по уравнениям: сначала все функции уравнения X₁ "
             "(f₁…f₁₄), ниже — уравнения X₂ (f₁₅…f₂₈) и т.д. У каждого уравнения есть строка "
@@ -329,12 +444,12 @@ with tab_in:
         st.info(
             "**Допустимые значения:**\n"
             f"- коэффициенты a₀, a₁, a₂, a₃ (и в строке функции, и в строке «для всех f уравнения») — {R('coef')};\n"
-            f"- Xᵢ(0) (начальное значение показателя) — {R('x')}."
+            f"- Xⱼ(0) (начальное значение показателя) — {R('x')}."
         )
         rnd_f = st.button("Рандомизировать коэффициенты f", key=k("rf"))
-        st.caption("В строке: fₖ(Xᵢ), справа — её значение при текущем Xᵢ(0); коэффициенты a₀…a₃ стоят "
-                   "рядом со своими степенями Xᵢ; Xᵢ(0) — начальное значение показателя Xᵢ. "
-                   "Изменение Xᵢ(0) меняет его и в таблице «Показатели», и во всех строках этого уравнения.")
+        st.caption("В строке: fₖ(Xⱼ), справа — её значение при текущем Xⱼ(0); коэффициенты a₀…a₃ стоят "
+                   "рядом со своими степенями Xⱼ; Xⱼ(0) — начальное значение показателя Xⱼ. "
+                   "Изменение Xⱼ(0) меняет его и в таблице «Показатели», и во всех строках, где используется Xⱼ.")
         st.divider()
 
         all_rows = M.f_table_rows()
@@ -352,13 +467,13 @@ with tab_in:
                     + [{"btn": "apply", "label": "Применить", "key": k(f"dab{eq_i}")}])
             if eq_vals["apply"]:
                 apply_eq = (eq_i, [float(eq_vals[f"a{n}"]) for n in range(4)])
-            xs = f"X{sub(eq_i)}"          # во всех функциях уравнения Xᵢ аргумент - сам Xᵢ
-            x0cur = float(cfg["indicators"][eq_i - 1]["x0"])
-            kx = f"{x0cur:.6f}"           # при смене Xᵢ(0) поля создаются заново
             for r in rows:
                 j, fk = r["j"], r["f"]
                 key = f"{eq_i},{j}"
                 cur = base["f_coefs"][key]
+                xs = f"X{sub(j)}"                                   # аргумент функции - показатель Xⱼ
+                x0cur = float(cfg["indicators"][j - 1]["x0"])      # его начальное значение Xⱼ(0)
+                kx = f"{x0cur:.6f}"                                 # при смене Xⱼ(0) поля создаются заново
 
                 def A(n, cur=cur, key=key, fk=fk):
                     return {"num": f"a{n}", "label": f"f{fk}: a{n}", "value": cur[n], "lim": LIM["coef"],
@@ -370,11 +485,20 @@ with tab_in:
                 # "\\+" - чтобы markdown не превращал строку, начинающуюся с «+», в маркер списка
                 out = formula_row([
                     {"txt": f"**f{sub(fk)}({xs})**", "w": 1.1},
-                    {"calc": f_value, "label": f"Значение f{fk} в уравнении X{eq_i}"},
-                    {"txt": "**=** a₀", "w": 0.7}, A(0),
-                    {"txt": f"\\+ a₁·{xs}", "w": 0.9}, A(1),
-                    {"txt": f"\\+ a₂·{xs}²", "w": 0.9}, A(2),
-                    {"txt": f"\\+ a₃·{xs}³", "w": 0.9}, A(3),
+                    {"calc": f_value, "label": f"Значение f{fk}(X{j}) в уравнении X{eq_i}"},
+                    {"txt": " **=**", "w": 0.2},
+                    A(0),
+                    {"txt": " **+**", "w": 0.2},
+                    A(1),
+                    {"txt": f"·{xs} · ", "w": 0.4},
+
+                    {"txt": " **+**", "w": 0.4},
+                    A(2),
+                    {"txt": f"·{xs}²   ", "w": 0.4},
+
+                    {"txt": " **+**", "w": 0.2},
+                    A(3),
+                    {"txt": f"·{xs}³", "w": 0.4},
                     {"txt": f"{xs}(0) =", "w": 0.9},
                     {"num": "x0", "label": f"f{fk}: {xs}(0)", "value": x0cur, "lim": LIM["x"],
                      "key": k(f"fx0{key}_{kx}")},
@@ -383,7 +507,7 @@ with tab_in:
                 cfg["f_coefs"][key] = new
                 base["f_coefs"][key] = list(new)     # запоминаем введённое
                 if abs(float(out["x0"]) - x0cur) > 1e-12:
-                    x0_changes[eq_i] = float(out["x0"])
+                    x0_changes[j] = float(out["x0"])
 
 # Начальное значение X_j(0), введённое в строке функции, переносим в показатели и обновляем все поля
 if x0_changes:
@@ -519,4 +643,4 @@ with tab_graph:
 #  Формулы
 # --------------------------------------------------------------------------- #
 with tab_eq:
-    render_equations()
+    render_equations(cfg, res)

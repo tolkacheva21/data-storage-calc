@@ -623,44 +623,65 @@ def _lx_prod(items) -> str:
     return r"\,".join(_lx_f(k, j) for k, j in items)
 
 
-def equation_latex(i: int) -> str:
-    """Уравнение для X_i в виде LaTeX - как в документе:
+def f_value(cfg: dict, i: int, j: int, xj: float) -> float:
+    """Значение функции f в уравнении X_i при аргументе X_j = xj: a0 + a1·x + a2·x² + a3·x³
+    (коэффициенты берутся из cfg["f_coefs"], то есть из вкладки «Функции fₖ»)."""
+    c = [float(v) for v in cfg["f_coefs"][f"{i},{j}"]] + [0.0] * 4
+    return sum(c[n] * xj ** n for n in range(4))
 
-        dX_i(t, p(t))/dt = 1/(max X_i*) · ( f_1(X_1(t)) f_2(X_2(t)) ... (ζ_1(t)+ζ_2(t)) - ζ_3(t) )
 
-    Единица в числителе и max X_i* оставлены как в документе (масштаб τ в формулу не подставляется)."""
+def equation_latex(i: int, f_repr=None, z_repr=None, prefix: str | None = None) -> str:
+    """Уравнение для X_i в виде LaTeX.
+
+    Без аргументов - символьная запись как в документе. Если переданы f_repr(k, j) и z_repr(m)
+    (функции, возвращающие строку с числом), то f_k(X_j(t)) и ζ_m(t) заменяются числами,
+    а множители соединяются знаком умножения. prefix - множитель перед скобкой
+    (по умолчанию 1/max X_i*)."""
+    numeric = f_repr is not None
+    fr = f_repr or _lx_f
+    zr = z_repr or _lx_z
+    sep = r" \cdot " if numeric else r"\,"          # между множителями-функциями
+    brk = r"\cdot" if numeric else r"\star"          # знак при переносе строки
+
+    def zsum(ms):
+        return "(" + "+".join(zr(m) for m in ms) + ")"
+
+    def zone(ms):
+        return zsum(ms) if len(ms) > 1 else zr(ms[0])
+
     eq = EQUATIONS[i]
-    P = [_lx_f(k, j) for k, j in eq.p]
-    Qs = _lx_prod(eq.q)
+    P = [fr(k, j) for k, j in eq.p]
+    Qs = sep.join(fr(k, j) for k, j in eq.q)
     q_wrapped = f"({Qs})" if len(eq.q) > 1 else Qs
 
     if eq.kind == "std":
-        tail = _lx_zsum(eq.plus)
+        tail = zsum(eq.plus)
         if eq.minus:
             if eq.q:
-                tail += " - " + q_wrapped + (_lx_zsum(eq.minus) if len(eq.minus) > 1 else _lx_z(eq.minus[0]))
+                tail += " - " + q_wrapped + zone(eq.minus)
             else:
-                tail += "".join(f" - {_lx_z(m)}" for m in eq.minus)
+                tail += "".join(f" - {zr(m)}" for m in eq.minus)
     elif eq.kind == "sub":
-        if eq.q:
-            tail = "- " + q_wrapped + (_lx_zsum(eq.minus) if len(eq.minus) > 1 else _lx_z(eq.minus[0]))
-        else:
-            tail = "- " + (_lx_zsum(eq.minus) if len(eq.minus) > 1 else _lx_z(eq.minus[0]))
+        tail = "- " + (q_wrapped if eq.q else "") + zone(eq.minus)
     elif eq.kind == "diffmul":
-        tail = f"- {q_wrapped}"          # (P - Q)·Σ: в текущих уравнениях не используется
+        tail = f"- {q_wrapped}"
     else:  # x4
-        tail = _lx_z(5) + " - (" + "+".join(_lx_z(m) for m in (1, 2, 3, 4)) + " + " + r"\star".join(
-            _lx_f(k, j) for k, j in eq.q) + ")"
+        tail = zr(5) + " - (" + "+".join(zr(m) for m in (1, 2, 3, 4)) + " + " + brk.join(
+            fr(k, j) for k, j in eq.q) + ")"
 
     chunks = [P[n:n + _FACTORS_PER_LINE] for n in range(0, len(P), _FACTORS_PER_LINE)]
-    lines = [r"\,".join(c) for c in chunks]
+    lines = [sep.join(c) for c in chunks]
+    body = (" " + brk + r" \\ &\quad " + brk + " ").join(lines)
+    neg = tail.lstrip().startswith("-")              # хвост «- ζ…» без знака умножения перед ним
     if len(lines) > 1:
-        lines.append(tail)                      # хвост с возмущениями - отдельной строкой, как в документе
+        body += (r" \\ &\quad " if neg else " " + brk + r" \\ &\quad " + brk + " ") + tail
     else:
-        lines[0] += r"\," + tail
-    body = r" \star \\ &\quad \star ".join(lines)
-    return (r"\begin{aligned}\frac{dX_{" + str(i) + r"}(t,p(t))}{dt} &= \frac{1}{\max X_{" + str(i)
-            + r"}^{*}}\Big( " + body + r" \Big)\end{aligned}")
+        body += (" " if neg else (" \\cdot " if numeric else r"\,")) + tail
+
+    if prefix is None:
+        prefix = r"\frac{1}{\max X_{" + str(i) + r"}^{*}}"
+    return (r"\begin{aligned}\frac{dX_{" + str(i) + r"}(t,p(t))}{dt} &= " + prefix
+            + r"\Big( " + body + r" \Big)\end{aligned}")
 
 
 def equation_conditions(i: int) -> List[str]:
